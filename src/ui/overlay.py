@@ -11,8 +11,11 @@ It began as a two-line subtitle box that hugged its text and faded when the
 speaker stopped. It is now a panel of fixed size (the user may resize it; it
 never resizes itself):
 
-  * a slim header — status, pause, settings, close — which is also the handle
-    the window is dragged by;
+  * a slim header — a status dot, then lock, pause, settings and close — which
+    is also the handle the window is dragged by. Only the dot stays; the
+    buttons and the status line fade in while the mouse is over the window
+    (the status line also when something needs attention: loading, paused,
+    an error, running on the CPU), so what shows over a video is the text;
   * the transcript: every finished line a right-to-left paragraph, the line
     being spoken last, its tentative words dimmed. It follows new text while
     scrolled to the bottom and stays where it is while the user reads further
@@ -24,31 +27,33 @@ the keyboard. Click-through (from the tray) makes it ignore the mouse entirely.
 """
 
 from PyQt6.QtCore import (
-    QPoint, QPointF, QRect, QRectF, QSettings, QSize, Qt, QTimer, pyqtSignal,
+    QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, QSettings, QSize, Qt,
+    QTimer, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QColor, QFont, QGuiApplication, QIcon, QPainter, QPainterPath, QPen,
-    QPixmap, QPolygonF, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextOption,
+    QAction, QActionGroup, QFont, QGuiApplication, QIcon, QPainter, QPen, QTextBlockFormat,
+    QTextCharFormat, QTextCursor, QTextFormat, QTextOption,
 )
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMenu, QSizeGrip, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QSizeGrip, QTextEdit, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
-from src.ui.translate import (
-    LANGUAGES, MODES, TranslatePopup, Translator, translate_icon,
-)
 from src.config import (
     OVERLAY_BOTTOM_MARGIN, OVERLAY_FONTS, OVERLAY_HEIGHT_PX, OVERLAY_HISTORY_LINES,
-    OVERLAY_MAX_WIDTH_PX, OVERLAY_RAISE_EVERY_MS, OVERLAY_STATUS, OVERLAY_TENTATIVE,
-    OVERLAY_TEXT, OVERLAY_WIDTH_FRACTION,
+    OVERLAY_MAX_WIDTH_PX, OVERLAY_RAISE_EVERY_MS, OVERLAY_WIDTH_FRACTION,
 )
+from src.ui import icons
+from src.ui.theme import (
+    ACCENT, ACCENT_HOVER, BUSY, ERROR, FIELD_HOVER, HAIRLINE, IDLE, LINE, LIVE, RADIUS,
+    RADIUS_CONTROL, RAISED, SELECTION, SMALL_PX, SURFACE, TENTATIVE, TEXT, TEXT_2, TEXT_3,
+    icon_button_stylesheet, polish_menu, qcolor, rgba,
+)
+from src.ui.translate import LANGUAGES, MODES, TranslatePopup, Translator
 
-RADIUS = 12
-
-
-def _rgba(values) -> str:
-    r, g, b, a = values
-    return f"rgba({r},{g},{b},{a})"
+FADE_MS = 160            # controls fading in and out
+HIDE_AFTER_MS = 600      # the mouse gone this long before they fade
+FIRST_SHOW_MS = 3000     # shown this long at the start, so they can be found
 
 
 # ── The transcript ─────────────────────────────────────────────────────
@@ -74,18 +79,25 @@ class TranscriptView(QTextEdit):
         self.setCursorWidth(0)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Always on, and invisible until the mouse is over the window: its
+        # space is kept, so the text does not reflow when history first
+        # overflows or when the bar is shown.
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.setWordWrapMode(QTextOption.WrapMode.WordWrap)
         self.viewport().setAutoFillBackground(False)
         self.setStyleSheet(
-            "QTextEdit { background: transparent; color: white;"
-            " selection-background-color: rgba(70,130,230,190); selection-color: white; }"
-            "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
-            "QScrollBar::handle:vertical { background: rgba(255,255,255,70);"
-            " border-radius: 3px; min-height: 24px; }"
+            f"QTextEdit {{ background: transparent; color: {rgba(TEXT)};"
+            f" selection-background-color: {rgba(SELECTION)}; selection-color: {rgba(TEXT)}; }}"
+            "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 1px 2px 3px; }"
+            "QScrollBar::handle:vertical { background: transparent; border-radius: 2px;"
+            " min-height: 24px; }"
+            f'QScrollBar[revealed="true"]::handle:vertical {{ background: {rgba(TEXT_3)}; }}'
             "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }"
             "QScrollBar::add-page, QScrollBar::sub-page { background: none; }"
         )
         self.setPlaceholderText("…")
+        self._hovered = False
+        self.verticalScrollBar().rangeChanged.connect(self._range_changed)
 
         # In a right-to-left paragraph a plain AlignRight means "the starting
         # edge" — which Qt then puts on the left. Absolute means the right edge.
@@ -102,15 +114,18 @@ class TranscriptView(QTextEdit):
         self._note_block = QTextBlockFormat()
         self._note_block.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._note_block.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._note_block.setBottomMargin(4)
+        self._note_block.setTopMargin(4)
+        self._note_block.setBottomMargin(8)
 
         self._final = QTextCharFormat()
-        self._final.setForeground(QColor(*OVERLAY_TEXT))
+        self._final.setForeground(qcolor(TEXT))
         self._tentative = QTextCharFormat()
-        self._tentative.setForeground(QColor(*OVERLAY_TENTATIVE))
+        self._tentative.setForeground(qcolor(TENTATIVE))
+        # A caption, not a subtitle: small, light and grey whatever the text size.
         self._note = QTextCharFormat()
-        self._note.setForeground(QColor(*OVERLAY_STATUS))
-        self._note.setFontItalic(True)
+        self._note.setForeground(qcolor(TEXT_3))
+        self._note.setProperty(QTextFormat.Property.FontPixelSize, SMALL_PX)
+        self._note.setFontWeight(QFont.Weight.Normal)
 
         QTextCursor(self.document()).setBlockFormat(self._block)
         self._live_start = 0          # where the live paragraph begins
@@ -131,18 +146,35 @@ class TranscriptView(QTextEdit):
         self.translator.finished.connect(self._translated)
         self.popup: TranslatePopup | None = None
         self.translate_button = QToolButton(self.viewport())
-        self.translate_button.setIcon(translate_icon(22))
-        self.translate_button.setIconSize(QSize(22, 22))
+        self.translate_button.setIcon(icons.icon(icons.TRANSLATE, 16))
+        self.translate_button.setIconSize(QSize(16, 16))
+        self.translate_button.setFixedSize(28, 26)
+        self.translate_button.setAutoRaise(True)
         self.translate_button.setToolTip("Translate the selection with Google Translate")
         self.translate_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.translate_button.setStyleSheet(
-            "QToolButton { background: rgba(255,255,255,235); border-radius: 7px; padding: 2px; }"
-            "QToolButton:hover { background: white; }")
+            f"QToolButton {{ background: {rgba(RAISED)}; border: 1px solid {rgba(LINE)};"
+            f" border-radius: {RADIUS_CONTROL}px; }}"
+            f"QToolButton:hover {{ background: {rgba(FIELD_HOVER)}; }}")
         self.translate_button.hide()
         self.translate_button.clicked.connect(self.translate_selection)
         self.selectionChanged.connect(self._selection_changed)
 
     # ── Content ────────────────────────────────────────────────────────
+
+    def set_hovered(self, on: bool):
+        """The scroll bar shows only under the mouse, and only when there is history."""
+        self._hovered = on
+        self._range_changed()
+
+    def _range_changed(self, *_):
+        bar = self.verticalScrollBar()
+        revealed = self._hovered and bar.maximum() > 0
+        if bar.property("revealed") != revealed:
+            bar.setProperty("revealed", revealed)
+            bar.style().unpolish(bar)
+            bar.style().polish(bar)
+            bar.update()
 
     def at_bottom(self) -> bool:
         bar = self.verticalScrollBar()
@@ -281,6 +313,11 @@ class TranscriptView(QTextEdit):
 
     def build_context_menu(self) -> QMenu:
         menu = self.createStandardContextMenu()     # Copy, Select All
+        # Text only: the desktop theme's colour icons, and the mnemonic
+        # underlines ("C̲opy"), were the loudest things in a quiet menu.
+        for action in menu.actions():
+            action.setIcon(QIcon())
+            action.setText(action.text().replace("&", ""))
         menu.addSeparator()
         copy_all = QAction("Copy whole transcript", menu)
         copy_all.triggered.connect(lambda: QGuiApplication.clipboard().setText(self.full_text()))
@@ -291,11 +328,11 @@ class TranscriptView(QTextEdit):
 
         menu.addSeparator()
         if self.translate_mode != "off":
-            now = QAction(translate_icon(16), "Translate selection", menu)
+            now = QAction("Translate selection", menu)
             now.setEnabled(bool(self.selected_text()))
             now.triggered.connect(self.translate_selection)
             menu.addAction(now)
-        google = menu.addMenu(translate_icon(16), "Google Translate")
+        google = menu.addMenu("Google Translate")
         modes = QActionGroup(google)
         for value, label in MODES:
             a = QAction(label, google, checkable=True)
@@ -317,7 +354,7 @@ class TranscriptView(QTextEdit):
             menu.addSeparator()
             for action in extra:
                 menu.addAction(action)
-        return menu
+        return polish_menu(menu)
 
     def _choose(self, mode: str, target: str):
         self.set_translation(mode, target)
@@ -329,89 +366,119 @@ class TranscriptView(QTextEdit):
 
 # ── The header: status, buttons, and the handle to drag ────────────────
 
-def _glyph(draw, size: int) -> QIcon:
-    """A flat white glyph on a 24-unit grid: dimmed at rest, full white under the mouse.
+class StatusDot(QWidget):
+    """What the app is doing, at a glance: a small coloured dot, lit fully while speech is heard."""
 
-    Drawn rather than typed: the emoji 🔒 🔓 ⏸ came out in colour, or small,
-    depending on the font the system picked.
-    """
-    icon = QIcon()
-    for s in (size, size * 2):
-        full = QPixmap(s, s)
-        full.fill(Qt.GlobalColor.transparent)
-        p = QPainter(full)
+    COLORS = {"loading": BUSY, "slow": BUSY, "listening": LIVE, "paused": IDLE, "ended": IDLE,
+              "error": ERROR}
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setFixedSize(14, 14)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.state, self.speech = "loading", False
+
+    def set_state(self, state: str, speech: bool):
+        if (state, speech) != (self.state, self.speech):
+            self.state, self.speech = state, speech
+            self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.scale(s / 24, s / 24)
-        draw(p, QColor(255, 255, 255))
-        p.end()
-        dim = QPixmap(s, s)
-        dim.fill(Qt.GlobalColor.transparent)
-        p = QPainter(dim)
-        p.setOpacity(190 / 255)
-        p.drawPixmap(0, 0, full)
-        p.end()
-        icon.addPixmap(dim, QIcon.Mode.Normal)
-        icon.addPixmap(full, QIcon.Mode.Active)
-    return icon
-
-
-def _lock(closed: bool):
-    def draw(p: QPainter, color: QColor):
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(color)
-        p.drawRoundedRect(QRectF(5, 10.5, 14, 10.5), 2, 2)
-        shackle = QPainterPath(QPointF(8, 11))
-        shackle.lineTo(8, 7)
-        shackle.arcTo(QRectF(8, 3, 8, 8), 180, -180)
-        if closed:
-            shackle.lineTo(16, 11)
-        p.setPen(QPen(color, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                      Qt.PenJoinStyle.RoundJoin))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(shackle)
-    return draw
-
-
-def _pause(p: QPainter, color: QColor):
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(color)
-    p.drawRoundedRect(QRectF(6, 4.5, 4.5, 15), 1.2, 1.2)
-    p.drawRoundedRect(QRectF(13.5, 4.5, 4.5, 15), 1.2, 1.2)
-
-
-def _play(p: QPainter, color: QColor):
-    p.setPen(QPen(color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                  Qt.PenJoinStyle.RoundJoin))
-    p.setBrush(color)
-    p.drawPolygon(QPolygonF([QPointF(8, 5), QPointF(8, 19), QPointF(19, 12)]))
+        centre = QPointF(self.width() / 2, self.height() / 2)
+        colour = qcolor(self.COLORS.get(self.state, IDLE))
+        if self.state == "listening" and not self.speech:
+            colour.setAlpha(140)             # listening to silence: the same light, dimmer
+        p.setBrush(colour)
+        p.drawEllipse(centre, 3, 3)
+        p.end()
 
 
 class Header(QWidget):
+    # States whose line stays on screen without the mouse: something to know.
+    ATTENTION = {"loading", "slow", "paused", "ended", "error"}
+
     def __init__(self, window: "TranscriptWindow"):
         super().__init__(window)
         self._window = window
+        self._state = "loading"
+        self._revealed = False
+        self.setFixedHeight(26)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.dot = StatusDot(self)
+        layout.addWidget(self.dot)
+        layout.addSpacing(6)
         self.status = QLabel("")
-        self.status.setStyleSheet(f"color: {_rgba(OVERLAY_STATUS)}; font-size: 12px;")
+        self.status.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.status.setStyleSheet(f"color: {rgba(TEXT_2)}; font-size: {SMALL_PX}px;")
         layout.addWidget(self.status, 1)
+
+        self.controls = QWidget(self)
+        row = QHBoxLayout(self.controls)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
         self._icons = {
-            "locked": _glyph(_lock(True), 18), "unlocked": _glyph(_lock(False), 18),
-            "pause": _glyph(_pause, 22), "play": _glyph(_play, 22),
+            "locked": icons.icon(icons.LOCK, 16, rest=ACCENT, hover=ACCENT_HOVER),
+            "unlocked": icons.icon(icons.UNLOCK, 16),
+            "pause": icons.icon(icons.PAUSE, 16), "play": icons.icon(icons.PLAY, 16),
         }
-        self.lock_button = self._button("", "")
-        self.lock_button.setIconSize(QSize(18, 18))
+        self.lock_button = self._button("")
         self.lock_button.setCheckable(True)
         self.set_locked(False)
-        self.pause_button = self._button("", "Pause / resume listening")
-        self.pause_button.setIconSize(QSize(22, 22))
+        self.pause_button = self._button("Pause / resume listening")
         self.set_paused(False)
-        self.settings_button = self._button("⚙", "Settings")
-        self.quit_button = self._button("✕", "Quit LiveTranscribe")
+        self.settings_button = self._button("Settings")
+        self.settings_button.setIcon(icons.icon(icons.SETTINGS, 16))
+        self.quit_button = self._button("Quit LiveTranscribe")
+        self.quit_button.setIcon(icons.icon(icons.CLOSE, 16))
         for button in (self.lock_button, self.pause_button, self.settings_button, self.quit_button):
-            layout.addWidget(button)
+            row.addWidget(button)
+        layout.addWidget(self.controls)
+
+        # The buttons and the status line fade; the dot never does.
+        self._fades = {}
+        for widget in (self.controls, self.status):
+            effect = QGraphicsOpacityEffect(widget)
+            effect.setOpacity(0.0)
+            widget.setGraphicsEffect(effect)
+            fade = QPropertyAnimation(effect, b"opacity", self)
+            fade.setDuration(FADE_MS)
+            fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._fades[widget] = fade
         self.setCursor(Qt.CursorShape.SizeAllCursor)
+
+    def set_status(self, text: str, state: str, speech: bool = False, tip: str = ""):
+        self._state = state
+        self.status.setText(text)
+        self.setToolTip(tip or text)
+        self.dot.set_state(state, speech)
+        if state == "paused":
+            self.set_paused(True)
+        elif state in ("listening", "slow"):
+            self.set_paused(False)
+        self._fade(self.status, self._revealed or state in self.ATTENTION)
+
+    def reveal(self, on: bool, animate: bool = True):
+        self._revealed = on
+        self._fade(self.controls, on, animate)
+        self._fade(self.status, on or self._state in self.ATTENTION, animate)
+
+    def _fade(self, widget: QWidget, visible: bool, animate: bool = True):
+        fade, target = self._fades[widget], 1.0 if visible else 0.0
+        effect = widget.graphicsEffect()
+        if fade.endValue() == target and fade.state() == QPropertyAnimation.State.Running:
+            return
+        fade.stop()
+        if not animate or not self.isVisible():
+            effect.setOpacity(target)
+            return
+        fade.setStartValue(effect.opacity())
+        fade.setEndValue(target)
+        fade.start()
 
     def set_locked(self, on: bool):
         self.lock_button.setChecked(on)
@@ -425,17 +492,14 @@ class Header(QWidget):
     def set_paused(self, paused: bool):
         self.pause_button.setIcon(self._icons["play" if paused else "pause"])
 
-    def _button(self, text: str, tip: str) -> QToolButton:
-        b = QToolButton(self)
-        b.setText(text)
+    def _button(self, tip: str) -> QToolButton:
+        b = QToolButton(self.controls)
         b.setToolTip(tip)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
-        b.setAutoRaise(True)
-        b.setStyleSheet(
-            "QToolButton { color: rgba(255,255,255,190); border: none; padding: 1px 6px;"
-            " font-size: 14px; border-radius: 6px; }"
-            "QToolButton:hover { background: rgba(255,255,255,40); color: white; }"
-        )
+        b.setAutoRaise(True)                 # the brighter icon under the mouse
+        b.setFixedSize(26, 26)
+        b.setIconSize(QSize(16, 16))
+        b.setStyleSheet(icon_button_stylesheet())
         return b
 
     def mousePressEvent(self, event):
@@ -450,6 +514,14 @@ class Header(QWidget):
 
 
 # ── The window ─────────────────────────────────────────────────────────
+
+class _Grip(QSizeGrip):
+    """The resize corner, unpainted: the window draws its mark, and only under the mouse."""
+
+    def paintEvent(self, _event):
+        pass
+
+
 
 class TranscriptWindow(QWidget):
     pause_clicked = pyqtSignal()
@@ -466,6 +538,8 @@ class TranscriptWindow(QWidget):
         self._shape_input = QGuiApplication.platformName() == "xcb"
         self._opacity = 75
         self._drag_offset = None
+        self._hovered = False
+        self._revealed = False
         self.extra_actions: list[QAction] = []
 
         self.setWindowTitle("LiveTranscribe")
@@ -476,13 +550,12 @@ class TranscriptWindow(QWidget):
         self.header = Header(self)
         self.view = TranscriptView(self)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 6, 10, 12)
+        layout.setContentsMargins(12, 6, 6, 10)
         layout.setSpacing(2)
         layout.addWidget(self.header)
         layout.addWidget(self.view, 1)
-        self.grip = QSizeGrip(self)
+        self.grip = _Grip(self)
         self.grip.setFixedSize(14, 14)
-        self.grip.setStyleSheet("background: transparent;")
 
         self.header.lock_button.clicked.connect(
             lambda: self.click_through_toggled.emit(not self._click_through))
@@ -494,6 +567,12 @@ class TranscriptWindow(QWidget):
         self._save_geometry_later.setSingleShot(True)
         self._save_geometry_later.setInterval(500)
         self._save_geometry_later.timeout.connect(self._save_geometry)
+
+        # The controls fade out a moment after the mouse leaves, not at once:
+        # crossing the edge on the way to a button must not flicker them.
+        self._conceal_later = QTimer(self)
+        self._conceal_later.setSingleShot(True)
+        self._conceal_later.timeout.connect(lambda: self.reveal_controls(self._hovered))
 
         self._raiser = QTimer(self)
         self._raiser.setInterval(OVERLAY_RAISE_EVERY_MS)
@@ -508,15 +587,26 @@ class TranscriptWindow(QWidget):
         self.view.add_update([line.text for line in update.finished],
                              update.committed, update.tentative)
 
-    def set_status(self, text: str, paused: bool | None = None):
-        self.header.status.setText(text)
-        if paused is not None:
-            self.header.set_paused(paused)
+    def set_status(self, text: str, state: str = "listening", speech: bool = False, tip: str = ""):
+        """`state`: loading, listening, slow (on the CPU), paused, ended or error — the dot's colour.
+
+        While listening the line shows under the mouse only; any other state
+        keeps it on screen.
+        """
+        self.header.set_status(text, state, speech, tip)
 
     def add_note(self, text: str):
         self.view.add_note(text)
 
     def apply_settings(self, prefs):
+        self.preview(prefs)
+        self.view.set_translation(prefs.translate, prefs.translate_to)
+        if self._click_through != prefs.click_through:
+            self.set_click_through(prefs.click_through)
+
+    def preview(self, prefs):
+        """Only the look — text size, background, tentative words: the settings
+        dialog shows them live, and puts the saved ones back on Cancel."""
         font = QFont()
         font.setFamilies(OVERLAY_FONTS)
         font.setPixelSize(prefs.font_px)
@@ -526,14 +616,15 @@ class TranscriptWindow(QWidget):
         self._opacity = prefs.opacity
         if self.view.show_tentative != prefs.show_tentative:
             self.view.set_show_tentative(prefs.show_tentative)
-        self.view.set_translation(prefs.translate, prefs.translate_to)
-        if self._click_through != prefs.click_through:
-            self.set_click_through(prefs.click_through)
         self.update()
 
     def show_window(self):
         if not self.isVisible():
             self.show()
+            # The controls hide until the mouse comes; show them at the start
+            # so there is a first chance to see that they exist.
+            self.reveal_controls(True, animate=False)
+            self._conceal_later.start(FIRST_SHOW_MS)
             if not self._bypass_wm:
                 # The window manager acts on the request only once the window
                 # is mapped, which happens after show() returns.
@@ -647,12 +738,35 @@ class TranscriptWindow(QWidget):
         if self.isVisible():
             self._save_geometry_later.start()
 
+    # ── The mouse over it: controls in, controls out ───────────────────
+
+    def enterEvent(self, _event):
+        self._hovered = True
+        self._conceal_later.stop()
+        self.reveal_controls(True)
+
+    def leaveEvent(self, _event):
+        self._hovered = False
+        self._conceal_later.start(HIDE_AFTER_MS)
+
+    def reveal_controls(self, on: bool, animate: bool = True):
+        self._revealed = on
+        self.header.reveal(on, animate)
+        self.view.set_hovered(on)
+        self.update()               # the resize mark
+
     # ── Painting ───────────────────────────────────────────────────────
 
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(12, 14, 18, int(255 * self._opacity / 100)))
-        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), RADIUS, RADIUS)
+        p.setPen(QPen(qcolor(HAIRLINE), 1))
+        p.setBrush(qcolor(SURFACE, int(255 * self._opacity / 100)))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
+        if self._revealed:
+            # Where to drag to resize: two short strokes in the corner.
+            p.setPen(QPen(qcolor(TEXT_3), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            x, y = self.width() - 6.0, self.height() - 6.0
+            p.drawLine(QPointF(x - 8, y), QPointF(x, y - 8))
+            p.drawLine(QPointF(x - 4, y), QPointF(x, y - 4))
         p.end()

@@ -119,12 +119,14 @@ def run_overlay(args) -> int:
     from src.ui.controller import Controller
 
     from src.ui.single import SingleInstance
+    from src.ui.theme import app_stylesheet
     from src.ui.tray import make_icon
 
     app = QApplication(sys.argv)
     app.setApplicationName("LiveTranscribe")
     app.setDesktopFileName("livetranscribe")
     app.setWindowIcon(make_icon())
+    app.setStyleSheet(app_stylesheet())      # menus and tooltips, in the app's colours
     app.setQuitOnLastWindowClosed(False)     # the tray keeps it going
 
     # Started a second time (from the app menu, say): show the running one

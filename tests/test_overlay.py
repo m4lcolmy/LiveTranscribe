@@ -158,6 +158,27 @@ def test_the_lock_button_asks_for_the_opposite_of_the_current_state(window):
     assert asked == [True]
 
 
+def test_the_controls_show_under_the_mouse_and_the_status_line_when_it_matters(app, window):
+    settle(app)
+    opacity = lambda w: w.graphicsEffect().opacity()      # noqa: E731
+    window.reveal_controls(False, animate=False)
+    window.set_status("small · GPU · -18 dB", "listening", speech=True)
+    assert wait_until(lambda: opacity(window.header.status) == 0, app)
+    assert opacity(window.header.controls) == 0
+    assert window.header.dot.speech
+    window.set_status("Loading Whisper small…", "loading")
+    assert wait_until(lambda: opacity(window.header.status) == 1, app)   # something to know
+    window.reveal_controls(True, animate=False)
+    assert opacity(window.header.controls) == 1
+
+
+def test_a_paused_state_shows_the_play_button(window):
+    window.set_status("Paused — not listening", "paused")
+    assert window.header.pause_button.icon().cacheKey() == window.header._icons["play"].cacheKey()
+    window.set_status("small · GPU", "listening")
+    assert window.header.pause_button.icon().cacheKey() == window.header._icons["pause"].cacheKey()
+
+
 def test_click_through_is_a_window_flag(window):
     window.apply_settings(AppSettings(click_through=True))
     assert window.windowFlags() & Qt.WindowType.WindowTransparentForInput
@@ -199,6 +220,36 @@ def test_the_dialog_shows_the_current_settings_and_returns_them_unchanged(app):
     assert dialog.model.currentData() == current.model
     assert dialog.result_settings() == current
     dialog.close()
+
+
+def test_the_dialog_previews_the_look_and_says_what_saving_will_restart(app):
+    from src.ui.settings import SettingsDialog
+    dialog = SettingsDialog(AppSettings())
+    previewed = []
+    dialog.appearance_changed.connect(previewed.append)
+    dialog.font_px.setValue(36)
+    assert previewed[-1].font_px == 36 and dialog.note.text() == ""
+    dialog.step.setCurrentIndex(dialog.step.findData(2.0))
+    assert dialog.note.text() == "Saving restarts listening"
+    dialog.precision.setCurrentIndex(dialog.precision.findData("int8"))
+    assert dialog.note.text() == "Saving reloads the model"
+    dialog.close()
+
+
+def test_preview_changes_only_the_look(window):
+    window.preview(AppSettings(font_px=40, opacity=50, click_through=True, translate="off"))
+    assert window.view.font().pixelSize() == 40
+    assert not window.click_through and window.view.translate_mode == "button"
+
+
+def test_icon_files_stay_clear_of_the_single_instance_socket(app):
+    # A folder at the socket's path made every start think another was
+    # running, and quit (2026-09-26).
+    from src.ui import icons
+    from src.ui.single import SingleInstance
+    from src.ui.theme import TEXT
+    folder = os.path.dirname(icons.file(icons.CHECK, 16, TEXT))
+    assert os.path.basename(folder) != SingleInstance().name
 
 
 def test_command_line_flags_override_saved_settings_for_one_run():

@@ -18,9 +18,9 @@ os.environ.setdefault("QT_LOGGING_RULES", "*.warning=false;qt.qpa.*=false")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSettings, Qt   # noqa: E402
+from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSettings       # noqa: E402
 from PyQt6.QtGui import (                                                 # noqa: E402
-    QColor, QFont, QImage, QLinearGradient, QPainter, QRadialGradient, QRegion, QTextCursor,
+    QColor, QFont, QImage, QLinearGradient, QPainter, QRadialGradient, QTextCursor,
 )
 from PyQt6.QtWidgets import QApplication, QWidget                         # noqa: E402
 
@@ -56,7 +56,7 @@ def backdrop(w: int, h: int) -> QImage:
     return img
 
 
-def panel(width: int, height: int, select: bool = False):
+def panel(width: int, height: int, select: bool = False, hovered: bool = False):
     from src.audio.streamer import Line, Update
     from src.ui.overlay import TranscriptWindow
     from src.ui.settings import AppSettings
@@ -69,9 +69,12 @@ def panel(width: int, height: int, select: bool = False):
     w.show_window()
     w.show_update(Update(tuple(Line(t, 0, 1) for t in LINES), LIVE_COMMITTED, LIVE_TENTATIVE,
                          (), (), None, 0.0))
-    w.set_status("● small · GPU — level -18 dB, gain 1.0×, speech…", paused=False)
+    w.set_status("small · GPU · -18 dB", "listening", speech=True)
     for _ in range(5):
         QApplication.processEvents()
+    # Under the mouse the controls show; otherwise only the status dot does.
+    # Set once events are done: offscreen, the window gets the mouse's Enter.
+    w.reveal_controls(hovered, animate=False)
     if select:
         # Scroll first: the translate button is placed beside the selection
         # as it is on screen at the moment it is selected.
@@ -90,7 +93,9 @@ def panel(width: int, height: int, select: bool = False):
 
 
 def draw_widget(p: QPainter, widget: QWidget, at: QPoint):
-    widget.render(p, at, QRegion(widget.rect()), QWidget.RenderFlag.DrawChildren)
+    # grab(), not render(): render() draws children that have a graphics
+    # effect (the header's fading controls and status line) out of place.
+    p.drawPixmap(at, widget.grab())
 
 
 def window_png():
@@ -99,14 +104,13 @@ def window_png():
     img = backdrop(W, H)
     p = QPainter(img)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    w = panel(820, 230, select=True)
+    w = panel(820, 230, select=True, hovered=True)
     at = QPoint((W - w.width()) // 2, H - w.height() - 40)
     draw_widget(p, w, at)
     pop = TranslatePopup()
+    pop.show_near(QPoint(0, 0), 520)
     pop.set_waiting("English")
     pop.set_result(TRANSLATION, "en")
-    pop.resize(520, 130)
-    pop.show()
     QApplication.processEvents()
     draw_widget(p, pop, QPoint(at.x() + 250, at.y() - pop.height() - 12))
     p.end()
@@ -151,7 +155,7 @@ def settings_png():
     d.show()
     QApplication.processEvents()
     img = QImage(d.size(), QImage.Format.Format_ARGB32)
-    img.fill(QColor(246, 246, 246))
+    img.fill(QColor(27, 30, 36))
     p = QPainter(img)
     d.render(p)
     p.end()

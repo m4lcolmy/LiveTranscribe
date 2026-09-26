@@ -21,6 +21,7 @@ not offered at all.
 """
 
 import gc
+import re
 import sys
 import threading
 
@@ -32,7 +33,8 @@ from src.core.debug import log
 from src.session import effective_args
 from src.ui.overlay import TranscriptWindow
 from src.ui.settings import AppSettings, SettingsDialog, open_store
-from src.ui.tray import make_icon
+from src.ui.theme import polish_menu
+from src.ui.tray import make_tray_icon
 
 
 class OverlaySink(QObject):
@@ -73,10 +75,11 @@ class Controller(QObject):
         self._quitting = False
         self._finished = False
         self._device_label = ""
+        self._on_cpu = False
 
         self.tray = None
         if QSystemTrayIcon.isSystemTrayAvailable():
-            self.tray = QSystemTrayIcon(make_icon(), self)
+            self.tray = QSystemTrayIcon(make_tray_icon(), self)
             self.tray.setToolTip("LiveTranscribe")
         if self.tray is None and QGuiApplication.platformName() != "xcb":
             self.prefs.click_through = False      # nothing would be left to click
@@ -131,7 +134,7 @@ class Controller(QObject):
         self.quit_action = QAction("Quit", menu)
         self.quit_action.triggered.connect(self.quit)
         menu.addAction(self.quit_action)
-        return menu
+        return polish_menu(menu)
 
     def _open_transcript(self):
         if self.session is not None:
@@ -163,10 +166,12 @@ class Controller(QObject):
         # at the bottom of the screen. It belongs in the middle.
         dialog = SettingsDialog(shown, None, click_through_allowed=(
             self.tray is not None or QGuiApplication.platformName() == "xcb"))
+        dialog.appearance_changed.connect(self.window.preview)
         dialog.adjustSize()
         screen = self.window.screen() or QGuiApplication.primaryScreen()
         dialog.move(screen.availableGeometry().center() - dialog.rect().center())
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.window.preview(self.prefs)         # undo what the dialog previewed
             return
         new = dialog.result_settings()
         needs = shown.needs(new)
@@ -182,10 +187,11 @@ class Controller(QObject):
         self.click_action.setChecked(new.click_through)
         self.click_action.blockSignals(False)
         if needs == "engine":
-            self.window.add_note(f"— model: {new.model}, {new.device}, {new.precision} —")
+            chosen = [v for v in (new.device, new.precision) if v != "auto"]
+            self.window.add_note(" · ".join([f"Switched to {new.model}", *chosen]))
             self._restart(reload_engine=True)
         elif needs == "pipeline":
-            self.window.add_note("— listening restarted with new settings —")
+            self.window.add_note("Listening restarted with the new settings")
             self._restart(reload_engine=False)
 
     def _restart(self, reload_engine: bool):
@@ -194,7 +200,7 @@ class Controller(QObject):
             return
         self._restart_pending = reload_engine
         if self.pipeline is not None and self.thread is not None and self.thread.is_alive():
-            self.window.set_status("Stopping…")
+            self.window.set_status("Stopping…", "loading")
             self.pipeline.stop()        # _pipeline_ended carries on
         else:
             self._continue_restart()
@@ -218,7 +224,7 @@ class Controller(QObject):
 
     def _load_engine(self):
         a = self.args
-        self.window.set_status(f"Loading Whisper {a.model}…")
+        self.window.set_status(f"Loading Whisper {a.model}…", "loading")
         if self.tray is not None:
             self.tray.setToolTip(f"LiveTranscribe — loading {a.model}")
         threading.Thread(target=self._load, args=(a.model, a.device, a.beam, a.precision),
@@ -235,8 +241,8 @@ class Controller(QObject):
 
     def _failed(self, message: str):
         print(message, file=sys.stderr)
-        self.window.set_status(message)
-        self.window.add_note(f"— {message} —")
+        self.window.set_status(message, "error")
+        self.window.add_note(message)
         if self.tray is not None:
             self.tray.setToolTip(f"LiveTranscribe — {message}")
 
@@ -269,10 +275,9 @@ class Controller(QObject):
         self.thread = threading.Thread(target=self._run, name="pipeline", daemon=True)
         self.thread.start()
 
-        gpu = engine.device == "cuda"
-        self._device_label = f"{self.args.model} · {'GPU' if gpu else 'CPU'}"
-        self.window.set_status(f"● Listening — {self._device_label}"
-                               + ("" if gpu else " (slower)"), paused=False)
+        self._on_cpu = engine.device != "cuda"
+        self._device_label = f"{self.args.model} · {'CPU' if self._on_cpu else 'GPU'}"
+        self._show_listening()
         self.pause_action.setEnabled(True)
         self.transcript_action.setEnabled(True)
         if self.tray is not None:
@@ -291,14 +296,27 @@ class Controller(QObject):
         elif self._restart_pending is not None:
             self._continue_restart()
         elif self.pipeline is not None and self.pipeline.ended:
-            self.window.set_status("End of file")
+            self.window.set_status("End of file", "ended")
             self.pause_action.setEnabled(False)
+
+    def _show_listening(self, detail: str = ""):
+        """The dot green (amber on the CPU); the line: model, device, and the level.
+
+        `detail` is the live loop's "level -23 dB, gain 1.0×, speech…". The
+        line keeps the level ("-23 dB", or "silent"); the tooltip keeps it all.
+        """
+        level = re.search(r"level (-?\d+ dB|silent)", detail)
+        text = self._device_label + (f" · {level.group(1)}" if level else "")
+        if self._on_cpu:
+            text += " · slower"
+        tip = f"Listening — {self._device_label}" + (f" — {detail}" if detail else "")
+        self.window.set_status(text, "slow" if self._on_cpu else "listening",
+                               speech="speech" in detail, tip=tip)
 
     def _show_level(self, text: str):
         if self.paused or self._restart_pending is not None or self._quitting:
             return
-        detail = text.split("— ", 1)[-1]           # "level -23 dB, gain 1.0×, speech…"
-        self.window.set_status(f"● {self._device_label} — {detail}")
+        self._show_listening(text.split("— ", 1)[-1])   # "level -23 dB, gain 1.0×, speech…"
 
     def _close_session(self):
         if self.session is not None and log.enabled:
@@ -317,9 +335,11 @@ class Controller(QObject):
         self.paused = paused
         self.pause_action.setText("Resume" if paused else "Pause")
         if self.tray is not None:
-            self.tray.setIcon(make_icon(paused=paused))
-        self.window.set_status("⏸ Paused — not listening" if paused
-                               else f"● Listening — {self._device_label}", paused=paused)
+            self.tray.setIcon(make_tray_icon(paused=paused))
+        if paused:
+            self.window.set_status("Paused — not listening", "paused")
+        else:
+            self._show_listening()
 
     def quit(self):
         if self._quitting:

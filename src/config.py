@@ -246,9 +246,8 @@ OVERLAY_FONT_MIN_PX = 14
 OVERLAY_FONT_MAX_PX = 48
 OVERLAY_FONTS = ["Noto Sans Arabic", "Noto Naskh Arabic", "Vazirmatn UI Decurled", "Sans"]
 OVERLAY_OPACITY = 75                         # background, percent — readable over video
-OVERLAY_TEXT = (255, 255, 255, 255)          # committed: final
-OVERLAY_TENTATIVE = (255, 255, 255, 130)     # tentative: may still change
-OVERLAY_STATUS = (255, 255, 255, 170)        # the header's status line
+# Colours — final and tentative words, the status line — are the look's, in
+# src/ui/theme.py with every other colour the app draws.
 # Lines kept in the window. Older ones leave the window, never the transcript
 # file, which has every line.
 OVERLAY_HISTORY_LINES = 2000

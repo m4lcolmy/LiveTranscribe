@@ -34,6 +34,8 @@ pw-record (speaker monitor) → AutoGain → Silero VAD → Streamer ⇄ Whisper
   generate at most 15 tokens per second of audio.
 
 Every constant is in `src/config.py`, with the measurement behind its value.
+The look — colours, radii, stylesheets — is in `src/ui/theme.py`: greyscale
+and one accent, and no colour typed anywhere else.
 
 ### The window on GNOME
 
@@ -111,9 +113,13 @@ at the end says whether the machine kept up.
 ## Pictures and icons
 
 ```bash
-python packaging/make_icons.py        # packaging/icons/*.png — the app icon at every size
+python packaging/make_icons.py        # packaging/icons/*.png — the app icon at every size, and the tray's
 python packaging/make_screenshots.py   # docs/images/*.png — rendered from the real widgets
 ```
+
+The app menu and the dock show a *copy* of the icon, made by `install.sh` in
+`~/.local/share/icons/hicolor`: after redrawing it, run `./install.sh` again
+(it only redoes what is missing, and always refreshes the icon).
 
 ## Layout
 
@@ -131,7 +137,9 @@ src/
   sinks.py              terminal and transcript file
   ui/    overlay.py     the transcript window: fixed-size, scrollable, copyable, translate button
          settings.py    saved settings and the ⚙ dialog
-         translate.py   Google Translate for selected text: request, icon, popup
+         theme.py       every colour, radius and stylesheet the app draws with
+         icons.py       the line icons, drawn with QPainter
+         translate.py   Google Translate for selected text: request, popup
          controller.py  model loading, the pipeline thread, applying settings, the menu
          single.py      one instance at a time
          tray.py        the app / tray icon

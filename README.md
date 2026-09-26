@@ -59,10 +59,15 @@ says `Loading Whisper small…` meanwhile.
 
 ## The window
 
+Over a video the window shows only the text and a small dot. Move the mouse
+over it and the controls appear in the top bar; they fade away again when the
+mouse leaves.
+
 | | |
 |---|---|
-| **Top bar** | Shows what the app is doing: `● small · GPU — level -18 dB, speech…` |
-| **🔓 / 🔒** | Click-through. When locked 🔒, clicks on the text go to whatever is under the window (a video's controls, for example). The top bar always stays clickable — click 🔒 again to unlock. |
+| **The dot** | What the app is doing. **Green**: listening — dim in silence, bright while it hears speech. **Amber**: loading, or running on the processor (slower). **Grey**: paused. **Red**: something went wrong — the top bar says what. |
+| **Top bar** | Under the mouse it shows the model, the device and the sound level: `small · GPU · -18 dB`. |
+| **🔓 / 🔒** | Click-through. When locked (the lock turns blue), clicks on the text go to whatever is under the window (a video's controls, for example). The top bar always stays clickable — point at it and click the lock again to unlock. |
 | **⏸ / ▶** | Pause and resume. While paused, nothing is listened to at all. |
 | **⚙** | Settings |
 | **✕** | Quit |
@@ -75,9 +80,8 @@ tray icon (top bar of the screen) → **Open transcript file**.
 
 ## Translation
 
-When you select text, a small translate button (a blue **G** tile) appears
-beside it. Click it and the translation opens above the window, with a
-**Copy** button.
+When you select text, a small translate button appears beside it.
+Click it and the translation opens above the window, with a copy button.
 
 Right-click the text → **Google Translate** to choose how it works:
 
@@ -96,35 +100,45 @@ Right-click the text → **Google Translate** to choose how it works:
 <img src="docs/images/settings.png" alt="The settings window" width="440" align="right">
 
 Click **⚙** in the window. Your choices are saved and used every time the app
-starts.
+starts. Text size and background change in the window as you drag them;
+**Cancel** puts them back. When a change needs the model reloaded or
+listening restarted, the dialog says so beside **Save**.
 
-- **Whisper model** — `small` is fast and the default. `large-v3` is more
-  accurate but several times slower (download it with any Whisper tool first).
-- **Run on** — the graphics card (GPU) or the processor (CPU).
-- **Update every** — how often the text is refreshed.
-- **Listen to** — your default speakers, or a specific output.
-- **Ignore speech that is not Arabic** — English speech is left out instead of
-  being written in Arabic letters.
-- **Text size**, **Background** opacity.
-- **Show words that may still change** — turn off to see only final words.
-- **Google Translate** and **Translate into** — see above.
+- **Recognition**
+  - **Model** — `small` is fast and the default. `large-v3` is more accurate
+    but several times slower (download it with any Whisper tool first).
+  - **Run on** — the graphics card (GPU) or the processor (CPU).
+- **Audio**
+  - **Listen to** — your default speakers, or a specific output.
+  - **Ignore speech that is not Arabic** — English speech is left out instead
+    of being written in Arabic letters.
+- **Window**
+  - **Text size**, **Background** opacity.
+  - **Show words that may still change** — turn off to see only final words.
+  - **Click-through** — see above.
+- **Translation** — **Translate** (off, a button, or at once) and **Into**
+  which language; see above.
+- **Advanced** (click to open) — **Precision**, and **Update every**: how
+  often the text is refreshed.
 
 <br clear="right">
 
 ## If something is wrong
 
 **No text appears.**
-Look at the top bar. If it says `silent` while something is playing, the sound
-is going to a different output — choose it in ⚙ → **Listen to**.
+Point at the window and look at the top bar. If it says `silent` while
+something is playing, the sound is going to a different output — choose it in
+⚙ → **Listen to**.
 
 **The text comes slowly.**
-If the top bar says `CPU`, the graphics card is not being used. Check that
+If the dot is amber and the top bar says `CPU`, the graphics card is not being
+used. Check that
 `nvidia-smi` works in a terminal. On Ubuntu, a kernel update can leave the
 NVIDIA driver behind; this usually fixes it:
 `sudo apt install linux-modules-nvidia-595-open-generic-hwe-24.04`, then restart.
 
 **I can't click the window.**
-Click-through is on: click **🔒** in the top bar. If anything else goes wrong
+Click-through is on: point at the top bar and click the blue **🔒**. If anything else goes wrong
 with the settings, right-click the LiveTranscribe icon in the app menu →
 **Start with default settings**.
 

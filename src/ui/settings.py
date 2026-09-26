@@ -15,16 +15,18 @@ import os
 import subprocess
 from dataclasses import asdict, dataclass, fields
 
-from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtCore import QSettings, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QLabel,
-    QSlider, QSpinBox, QVBoxLayout, QWidget, QHBoxLayout,
+    QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QPushButton, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
 
 from src.config import (
-    DEVICE, OVERLAY_FONT_MAX_PX, OVERLAY_FONT_MIN_PX, OVERLAY_FONT_PX, OVERLAY_OPACITY,
-    WHISPER_MODEL,
+    ASR_STEP_S_CPU, ASR_STEP_S_GPU, DEVICE, OVERLAY_FONT_MAX_PX, OVERLAY_FONT_MIN_PX,
+    OVERLAY_FONT_PX, OVERLAY_OPACITY, WHISPER_MODEL,
 )
+from src.ui import icons
+from src.ui.theme import TEXT, TEXT_2, dialog_palette, dialog_stylesheet
 from src.ui.translate import LANGUAGES, MODES, default_target
 
 SETTINGS_ORG = "LiveTranscribe"
@@ -95,12 +97,12 @@ MODEL_NOTES = {
 
 
 def cached_models() -> list[tuple[str, str]]:
-    """(name, label) for every faster-whisper model in the Hugging Face cache."""
+    """(name, size and note) for every faster-whisper model in the Hugging Face cache."""
     try:
         from faster_whisper.utils import _MODELS
         from huggingface_hub import try_to_load_from_cache
     except ImportError:
-        return [(WHISPER_MODEL, WHISPER_MODEL)]
+        return [(WHISPER_MODEL, "")]
     seen, out = set(), []
     for name, repo in _MODELS.items():
         if repo in seen or name.endswith(".en"):
@@ -111,8 +113,8 @@ def cached_models() -> list[tuple[str, str]]:
         seen.add(repo)
         size = os.path.getsize(os.path.realpath(path)) / 1e9
         note = MODEL_NOTES.get(name, "")
-        out.append((name, f"{name} — {size:.1f} GB" + (f" — {note}" if note else "")))
-    return out or [(WHISPER_MODEL, WHISPER_MODEL)]
+        out.append((name, f"{size:.1f} GB" + (f" — {note}" if note else "")))
+    return out or [(WHISPER_MODEL, "")]
 
 
 def audio_outputs() -> list[tuple[str, str]]:
@@ -140,149 +142,307 @@ def cuda_usable() -> bool:
 
 # ── The dialog ─────────────────────────────────────────────────────────
 
-STEPS = [(0.0, "Automatic (1 s on GPU, 2.5 s on CPU)"), (0.5, "0.5 s — fastest, more flicker"),
-         (1.0, "1 s"), (1.5, "1.5 s"), (2.0, "2 s"), (3.0, "3 s — for slow machines")]
-PRECISIONS = [("auto", "Automatic"), ("float16", "float16 (GPU)"),
-              ("int8_float16", "int8 + float16 (GPU, half the memory)"), ("int8", "int8 (CPU)")]
-DEVICES = [("auto", "Automatic — GPU when usable"), ("cuda", "GPU (CUDA)"), ("cpu", "CPU")]
+# Each choice is (value, label, hint); the hint shows under the drop-down.
+STEPS = [(0.0, "Automatic", f"{ASR_STEP_S_GPU:g} s on the GPU, {ASR_STEP_S_CPU:g} s on the CPU"),
+         (0.5, "0.5 s", "Fastest; the newest words change more often"),
+         (1.0, "1 s", ""), (1.5, "1.5 s", ""), (2.0, "2 s", ""),
+         (3.0, "3 s", "For slow machines")]
+PRECISIONS = [("auto", "Automatic", "float16 on the GPU (int8 + float16 for large models), "
+                                    "int8 on the CPU"),
+              ("float16", "float16", "GPU; on the CPU it runs as int8"),
+              ("int8_float16", "int8 + float16", "GPU, half the memory; on the CPU it runs as int8"),
+              ("int8", "int8", "The CPU's precision; runs on the GPU too")]
+DEVICES = [("auto", "Automatic", "The GPU when it is usable, else the CPU"),
+           ("cuda", "GPU (CUDA)", ""),
+           ("cpu", "CPU", "Several times slower than a GPU")]
+TRANSLATE_LABELS = {"off": "Off", "button": "Button beside selected text",
+                    "auto": "As soon as text is selected"}
+LABEL_PX = 104          # the label column, the same width in every section
+
+
+class _Section:
+    """Rows of one section: a label, its field, and under the field a hint when it has one."""
+
+    def __init__(self, grid: QGridLayout):
+        self.grid = grid
+        self.row = 0
+
+    def add(self, label: str, field: QWidget, hint: QLabel | None = None):
+        if label:
+            self.grid.addWidget(QLabel(label), self.row, 0)
+        self.grid.addWidget(field, self.row, 1)
+        self.row += 1
+        if hint is not None:
+            self.grid.addWidget(hint, self.row, 1)
+            self.row += 1
+
+
+def _hint(text: str = "") -> QLabel:
+    label = QLabel(text)
+    label.setProperty("role", "hint")
+    label.setWordWrap(True)
+    return label
 
 
 class SettingsDialog(QDialog):
+    # The look, as it is being chosen: the window shows it before Save.
+    appearance_changed = pyqtSignal(object)
+
     def __init__(self, current: AppSettings, parent: QWidget | None = None,
                  click_through_allowed: bool = True):
         super().__init__(parent)
         self.setWindowTitle("LiveTranscribe settings")
         # The transcript window stays on top of everything; so must its dialog.
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        self.setMinimumWidth(520)
+        dialog_palette(self)
+        self.setStyleSheet(dialog_stylesheet())
+        self.setMinimumWidth(500)
         self._current = current
 
-        form = QFormLayout()
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self._body = QVBoxLayout(self)
+        self._body.setContentsMargins(20, 16, 20, 16)
+        self._body.setSpacing(0)
 
         # Speech recognition
-        self.model = QComboBox()
-        for name, label in cached_models():
-            self.model.addItem(label, name)
+        recognition = self._section("Recognition")
+        self.model = self._combo([])
+        for name, detail in cached_models():
+            self._add_choice(self.model, name, name, detail)
         if self.model.findData(current.model) < 0:      # a folder chosen earlier
-            self.model.addItem(f"{os.path.basename(current.model.rstrip('/'))} — folder", current.model)
-        self.model.addItem("Other model folder…", "__browse__")
-        self.model.setCurrentIndex(max(0, self.model.findData(current.model)))
+            self._add_choice(self.model, current.model,
+                             os.path.basename(current.model.rstrip("/")), current.model)
+        self._add_choice(self.model, "__browse__", "Other model folder…", "")
         self.model.activated.connect(self._maybe_browse)
-        form.addRow("Whisper model", self.model)
+        self._select(self.model, current.model)
+        recognition.add("Model", self.model, self._hint_for(self.model))
 
-        self.device = QComboBox()
-        for value, label in DEVICES:
-            self.device.addItem(label, value)
+        self.device = self._combo(DEVICES)
         if not cuda_usable():
             self.device.model().item(1).setEnabled(False)
             self.device.setItemText(1, "GPU (CUDA) — not available now")
-        self.device.setCurrentIndex(max(0, self.device.findData(current.device)))
-        form.addRow("Run on", self.device)
+            self.device.setItemData(0, "No usable GPU now, so the CPU", Qt.ItemDataRole.ToolTipRole)
+        self._select(self.device, current.device)
+        # Said under the field only when it matters: no GPU to run on.
+        recognition.add("Run on", self.device,
+                        None if cuda_usable() else self._hint_for(self.device))
+        self._tip_for(self.device)
 
-        self.precision = QComboBox()
-        for value, label in PRECISIONS:
-            self.precision.addItem(label, value)
-        self.precision.setCurrentIndex(max(0, self.precision.findData(current.precision)))
-        form.addRow("Precision", self.precision)
-
-        self.step = QComboBox()
-        for value, label in STEPS:
-            self.step.addItem(label, value)
-        self.step.setCurrentIndex(max(0, self.step.findData(current.step_s)))
-        form.addRow("Update every", self.step)
-
-        self.sink = QComboBox()
-        self.sink.addItem("Default output — follows when it changes", "")
+        # Audio
+        audio = self._section("Audio")
+        self.sink = self._combo([("", "Default output", "Follows the default output when it changes")])
         for name, description in audio_outputs():
-            self.sink.addItem(description, name)
+            self._add_choice(self.sink, name, description, "")
         if current.sink and self.sink.findData(current.sink) < 0:
-            self.sink.addItem(f"{current.sink} (not connected now)", current.sink)
-        self.sink.setCurrentIndex(max(0, self.sink.findData(current.sink)))
-        form.addRow("Listen to", self.sink)
-
+            self._add_choice(self.sink, current.sink, f"{current.sink} (not connected now)", "")
+        self._select(self.sink, current.sink)
+        audio.add("Listen to", self.sink)
+        self._tip_for(self.sink)
         self.arabic_only = QCheckBox("Ignore speech that is not Arabic")
         self.arabic_only.setChecked(current.arabic_only)
-        form.addRow("", self.arabic_only)
+        audio.add("", self.arabic_only)
 
         # The window
-        self.font_px = QSpinBox()
+        window = self._section("Window")
+        self.font_px = QSlider(Qt.Orientation.Horizontal)
         self.font_px.setRange(OVERLAY_FONT_MIN_PX, OVERLAY_FONT_MAX_PX)
-        self.font_px.setSuffix(" px")
         self.font_px.setValue(current.font_px)
-        form.addRow("Text size", self.font_px)
-
-        opacity_row = QHBoxLayout()
+        window.add("Text size", self._with_value(self.font_px, "{} px"))
         self.opacity = QSlider(Qt.Orientation.Horizontal)
         self.opacity.setRange(20, 100)
         self.opacity.setValue(current.opacity)
-        self.opacity_label = QLabel(f"{current.opacity}%")
-        self.opacity.valueChanged.connect(lambda v: self.opacity_label.setText(f"{v}%"))
-        opacity_row.addWidget(self.opacity)
-        opacity_row.addWidget(self.opacity_label)
-        form.addRow("Background", opacity_row)
-
-        self.show_tentative = QCheckBox("Show words that may still change (dimmed)")
+        window.add("Background", self._with_value(self.opacity, "{}%"))
+        self.show_tentative = QCheckBox("Show words that may still change, dimmed")
         self.show_tentative.setChecked(current.show_tentative)
-        form.addRow("", self.show_tentative)
-
-        # Google Translate
-        self.translate = QComboBox()
-        for value, label in MODES:
-            self.translate.addItem(label, value)
-        self.translate.setCurrentIndex(max(0, self.translate.findData(current.translate)))
-        form.addRow("Google Translate", self.translate)
-        self.translate_to = QComboBox()
-        for code, name in LANGUAGES:
-            self.translate_to.addItem(name, code)
-        self.translate_to.setCurrentIndex(max(0, self.translate_to.findData(current.translate_to)))
-        form.addRow("Translate into", self.translate_to)
-        privacy = QLabel("Only text you select is sent to Google; transcription itself never "
-                         "leaves this computer.")
-        privacy.setWordWrap(True)
-        privacy.setStyleSheet("color: palette(mid);")
-        form.addRow("", privacy)
-
-        self.click_through = QCheckBox("Click-through — clicks on the text pass through")
+        window.add("", self.show_tentative)
+        self.click_through = QCheckBox("Click-through: clicks pass through the text")
         self.click_through.setChecked(current.click_through and click_through_allowed)
         self.click_through.setEnabled(click_through_allowed)
-        self.click_through.setToolTip("Clicks on the transcript go to the window under it; the top "
-                                      "bar stays clickable. Turn it off with its lock button."
+        self.click_through.setToolTip("The top bar stays clickable; turn it off with its lock button."
                                       if click_through_allowed else
                                       "Needs a tray icon to turn it back off")
-        form.addRow("", self.click_through)
+        window.add("", self.click_through)
 
-        note = QLabel("A new model, device or precision reloads the model; a new source or "
-                      "interval restarts listening. Saved settings are used at every start.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: palette(mid);")
+        # Google Translate
+        translation = self._section("Translation")
+        self.translate = self._combo([(value, TRANSLATE_LABELS.get(value, label), "")
+                                      for value, label in MODES])
+        self._select(self.translate, current.translate)
+        translation.add("Translate", self.translate)
+        self.translate_to = self._combo([(code, name, "") for code, name in LANGUAGES])
+        self._select(self.translate_to, current.translate_to)
+        translation.add("Into", self.translate_to,
+                        _hint("Only text you select is sent to Google."))
 
-        # Long model descriptions must not squeeze the labels: the drop-downs
-        # size to a fixed number of characters and elide the rest.
+        # Advanced: tuning most people never touch, folded away unless in use.
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setObjectName("disclosure")
+        self.advanced_toggle.setText("Advanced")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setIconSize(QSize(14, 14))
+        self.advanced_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._heading(self.advanced_toggle)
+        self.advanced = QWidget()
+        advanced = _Section(self._grid(self.advanced))
+        self.precision = self._combo(PRECISIONS)
+        self._select(self.precision, current.precision)
+        advanced.add("Precision", self.precision)
+        self._tip_for(self.precision)
+        self.step = self._combo(STEPS)
+        self._select(self.step, current.step_s)
+        advanced.add("Update every", self.step)
+        self._tip_for(self.step)
+        self._body.addWidget(self.advanced)
+        self.advanced_toggle.toggled.connect(self._show_advanced)
+        in_use = current.precision != "auto" or current.step_s != 0.0
+        self.advanced_toggle.setChecked(in_use)
+        self._show_advanced(in_use)
+
+        # What Save will do, then the buttons.
+        self.note = QLabel("")
+        self.note.setProperty("role", "note")
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("Save")
+        save.setProperty("primary", True)
+        save.setDefault(True)
+        save.clicked.connect(self.accept)
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        footer.addWidget(self.note, 1)
+        footer.addWidget(cancel)
+        footer.addWidget(save)
+        self._body.addSpacing(24)
+        self._body.addLayout(footer)
+        save.setFocus()             # no field lit up as if being edited
+
+        # Long output names must not widen the dialog: the drop-downs size to
+        # a fixed number of characters and elide the rest.
         for combo in (self.model, self.device, self.precision, self.step, self.sink,
                       self.translate, self.translate_to):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-            combo.setMinimumContentsLength(34)
+            combo.setMinimumContentsLength(28)
+            combo.currentIndexChanged.connect(self._changed)
+        for box in (self.arabic_only, self.click_through):
+            box.toggled.connect(self._changed)
+        self.font_px.valueChanged.connect(self._appearance)
+        self.opacity.valueChanged.connect(self._appearance)
+        self.show_tentative.toggled.connect(self._appearance)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
-                                   | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+    # ── Building ───────────────────────────────────────────────────────
 
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(note)
-        layout.addWidget(buttons)
+    def _grid(self, parent: QWidget | None = None) -> QGridLayout:
+        grid = QGridLayout(parent)
+        if parent is not None:
+            grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(8)
+        grid.setColumnMinimumWidth(0, LABEL_PX)
+        grid.setColumnStretch(1, 1)
+        return grid
+
+    def _heading(self, title: QWidget):
+        """A section's title, and a rule from it to the right edge."""
+        if self._body.count():
+            self._body.addSpacing(20)
+        rule = QFrame()
+        rule.setProperty("role", "rule")
+        rule.setFixedHeight(1)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(title)
+        row.addWidget(rule, 1, Qt.AlignmentFlag.AlignVCenter)
+        self._body.addLayout(row)
+        self._body.addSpacing(12)
+
+    def _section(self, title: str) -> _Section:
+        heading = QLabel(title)
+        heading.setProperty("role", "section")
+        self._heading(heading)
+        grid = self._grid()
+        self._body.addLayout(grid)
+        return _Section(grid)
+
+    def _combo(self, choices) -> QComboBox:
+        combo = QComboBox()
+        for value, label, hint in choices:
+            self._add_choice(combo, value, label, hint)
+        return combo
+
+    @staticmethod
+    def _add_choice(combo: QComboBox, value, label: str, hint: str):
+        combo.addItem(label, value)
+        if hint:
+            combo.setItemData(combo.count() - 1, hint, Qt.ItemDataRole.ToolTipRole)
+
+    @staticmethod
+    def _select(combo: QComboBox, value):
+        combo.setCurrentIndex(max(0, combo.findData(value)))
+
+    @staticmethod
+    def _hint_for(combo: QComboBox) -> QLabel:
+        """A hint that follows the drop-down: the chosen item's own, or nothing."""
+        hint = _hint()
+
+        def follow():
+            text = combo.currentData(Qt.ItemDataRole.ToolTipRole) or ""
+            hint.setText(text)
+            hint.setVisible(bool(text))
+        combo.currentIndexChanged.connect(follow)
+        follow()
+        return hint
+
+    @staticmethod
+    def _tip_for(combo: QComboBox):
+        """The chosen item's hint as the drop-down's tooltip, not a line under it."""
+        def follow():
+            combo.setToolTip(combo.currentData(Qt.ItemDataRole.ToolTipRole) or "")
+        combo.currentIndexChanged.connect(follow)
+        follow()
+
+    @staticmethod
+    def _with_value(slider: QSlider, fmt: str) -> QWidget:
+        box = QWidget()
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+        value = QLabel(fmt.format(slider.value()))
+        value.setProperty("role", "value")
+        value.setMinimumWidth(44)
+        value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        slider.valueChanged.connect(lambda v: value.setText(fmt.format(v)))
+        row.addWidget(slider, 1)
+        row.addWidget(value)
+        return box
+
+    def _show_advanced(self, on: bool):
+        self.advanced.setVisible(on)
+        self.advanced_toggle.setIcon(icons.icon(icons.CHEVRON_DOWN if on else icons.CHEVRON_RIGHT,
+                                                14, rest=TEXT_2, hover=TEXT))
+        if self.isVisible():
+            QTimer.singleShot(0, self.adjustSize)
+
+    # ── Changes ────────────────────────────────────────────────────────
+
+    def _changed(self, *_):
+        needs = self._current.needs(self.result_settings())
+        self.note.setText({"engine": "Saving reloads the model",
+                           "pipeline": "Saving restarts listening"}.get(needs, ""))
+
+    def _appearance(self, *_):
+        self._changed()
+        self.appearance_changed.emit(self.result_settings())
 
     def _maybe_browse(self, index: int):
         if self.model.itemData(index) != "__browse__":
             return
         folder = QFileDialog.getExistingDirectory(self, "A CTranslate2 Whisper model folder")
         if folder and os.path.exists(os.path.join(folder, "model.bin")):
-            self.model.insertItem(index, f"{os.path.basename(folder)} — folder", folder)
+            self.model.insertItem(index, os.path.basename(folder), folder)
+            self.model.setItemData(index, folder, Qt.ItemDataRole.ToolTipRole)
             self.model.setCurrentIndex(index)
         else:
-            self.model.setCurrentIndex(max(0, self.model.findData(self._current.model)))
+            self._select(self.model, self._current.model)
 
     def result_settings(self) -> AppSettings:
         return AppSettings(
