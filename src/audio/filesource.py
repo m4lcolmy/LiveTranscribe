@@ -28,7 +28,8 @@ class FileSource:
         return f"file {self.path.name} ({len(self.audio) / SAMPLE_RATE:.0f}s)"
 
     def start(self):
-        self._t0 = time.monotonic()
+        """Play from where it was; a resume after pause carries on, not over."""
+        self._t0 = time.monotonic() - self._pos / (self.speed * SAMPLE_RATE)
 
     def stop(self):
         pass

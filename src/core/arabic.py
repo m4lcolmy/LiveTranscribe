@@ -28,6 +28,9 @@ _TATWEEL = "ـ"
 # Punctuation Whisper attaches to words, Arabic and Latin.
 _PUNCTUATION = re.compile(r"[،؛؟٪-٭۔.,;:!?\"'«»()\[\]{}\-–—…/\\]")
 
+# Arabic-Indic and Persian digits: a caption writes ٢٠٢٦ where Whisper writes 2026.
+_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
 _ALEF_FORMS = str.maketrans({
     "ٱ": "ا",  # ٱ → ا
     "آ": "ا",  # آ → ا
@@ -53,5 +56,5 @@ def normalize(text: str) -> str:
 
 
 def compare_key(text: str) -> str:
-    """normalize() without punctuation. Two spellings of one word share a key."""
-    return _SPACES.sub(" ", _PUNCTUATION.sub(" ", normalize(text))).strip()
+    """normalize() without punctuation, digits unified. Two spellings of one word share a key."""
+    return _SPACES.sub(" ", _PUNCTUATION.sub(" ", normalize(text).translate(_DIGITS))).strip()

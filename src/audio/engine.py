@@ -63,6 +63,10 @@ class Engine:
     def load(self) -> "Engine":
         return self
 
+    def arabic_probability(self, audio: np.ndarray) -> float:
+        """How sure the engine is that this audio is Arabic. 1.0 when it cannot tell."""
+        return 1.0
+
     def transcribe(self, audio: np.ndarray, prompt: str | None = None) -> Transcription:
         raise NotImplementedError
 
@@ -114,18 +118,34 @@ class WhisperEngine(Engine):
     name = "whisper"
 
     def __init__(self, model: str = WHISPER_MODEL, device: str = DEVICE,
-                 beam_size: int = ASR_BEAM_SIZE):
+                 beam_size: int = ASR_BEAM_SIZE, precision: str = "auto"):
         self.model_name = model
         self.device_preference = device
         self.beam_size = beam_size
+        self.precision = precision
         self.model = None
         self.load_seconds = 0.0
+        # faster-whisper's own guards; overridable per run (replay.py --engine-set).
+        self.options = {
+            "no_speech_threshold": ASR_NO_SPEECH_THRESHOLD,
+            "log_prob_threshold": ASR_MIN_AVG_LOGPROB,
+            "compression_ratio_threshold": ASR_MAX_COMPRESSION_RATIO,
+        }
 
     def load(self) -> "WhisperEngine":
         from faster_whisper import WhisperModel
 
         t0 = time.monotonic()
         self.device, self.compute_type = resolve_device(self.device_preference, USE_FP16)
+        if self.precision != "auto":
+            # float16 has no CPU kernel; anything asked of a CPU becomes int8.
+            gpu_only = self.precision in ("float16", "int8_float16")
+            self.compute_type = "int8" if self.device == "cpu" and gpu_only else self.precision
+        elif self.device == "cuda" and "large" in str(self.model_name):
+            # large-v3 in float16 needs ~4.4 GB with its working memory — more
+            # than a 4 GB laptop GPU has (CaptionForge measured the same model
+            # on this machine). int8 weights halve it.
+            self.compute_type = "int8_float16"
         # local_files_only: the app never reaches the network. A model that is
         # not in the cache is an error to fix once, not a silent download.
         self.model = WhisperModel(
@@ -150,6 +170,11 @@ class WhisperEngine(Engine):
             prompt_tokens = 1 + min(len(ids), self._MAX_LENGTH // 2 - 1)
         return max(16, min(budget, self._MAX_LENGTH - prompt_tokens - 4))
 
+    def arabic_probability(self, audio: np.ndarray) -> float:
+        """Whisper's own language detection on this audio: P(Arabic)."""
+        _lang, _p, probs = self.model.detect_language(audio=audio)
+        return dict(probs).get("ar", 0.0)
+
     def transcribe(self, audio: np.ndarray, prompt: str | None = None) -> Transcription:
         t0 = time.monotonic()
         segments, _info = self.model.transcribe(
@@ -165,9 +190,7 @@ class WhisperEngine(Engine):
             condition_on_previous_text=False,
             initial_prompt=prompt or None,
             max_new_tokens=self._token_budget(len(audio) / SAMPLE_RATE, prompt),
-            no_speech_threshold=ASR_NO_SPEECH_THRESHOLD,
-            log_prob_threshold=ASR_MIN_AVG_LOGPROB,
-            compression_ratio_threshold=ASR_MAX_COMPRESSION_RATIO,
+            **self.options,
         )
         result = Transcription()
         for seg in segments:               # decoding happens while iterating

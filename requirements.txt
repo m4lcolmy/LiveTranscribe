@@ -1,4 +1,4 @@
-# LiveTranscribe — step 1 (terminal transcription)
+# LiveTranscribe
 #
 #   conda create -n livetranscribe python=3.12 && conda activate livetranscribe
 #   pip install -r requirements.txt
@@ -6,6 +6,9 @@
 # Also needed, from the system: PipeWire's pw-record and pw-metadata
 # (pipewire-bin), and the Whisper model in the Hugging Face cache
 # (Systran/faster-whisper-small). The app never downloads anything.
+
+# ── Interface ──────────────────────────────────────────────────────────
+PyQt6>=6.11.0                 # the subtitle overlay and its tray icon
 
 # ── Speech recognition ─────────────────────────────────────────────────
 faster-whisper>=1.2.1         # Whisper inference, and the Silero VAD model it bundles

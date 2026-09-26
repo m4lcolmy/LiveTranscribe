@@ -1,8 +1,7 @@
-"""LiveTranscribe — live Arabic transcription of whatever the computer plays.
+"""LiveTranscribe — live Arabic subtitles for whatever the computer plays.
 
-Step 1 (PLAN.md): transcription only, in the terminal. No window yet.
-
-    ./run.sh                          # listen to the system's audio output
+    ./run.sh                          # subtitles at the bottom of the screen
+    ./run.sh --console                # step 1's terminal mode, no window
     ./run.sh --file lecture.mp4       # a file, at the pace it would play
     ./run.sh --record                 # also keep the session for scripts/replay.py
     ./run.sh --sink <node.name>       # a specific output instead of the default
@@ -11,7 +10,6 @@ Step 1 (PLAN.md): transcription only, in the terminal. No window yet.
 import argparse
 import os
 import sys
-import time
 import warnings
 
 # Offline, always: a model missing from the cache is an error, not a download.
@@ -19,97 +17,125 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 warnings.filterwarnings("ignore", category=UserWarning)
 
-from src.config import (
-    WHISPER_MODEL, DEVICE, ASR_BEAM_SIZE, ASR_STEP_S_GPU, ASR_STEP_S_CPU, LOGS_DIR,
-)
-from src.core.debug import log, new_log_path
+from src.config import ASR_STEP_S_GPU, ASR_STEP_S_CPU, OVERLAY_FORCE_XWAYLAND
+from src.core.debug import log
 
 
 def parse_args(argv):
     p = argparse.ArgumentParser(
         prog="livetranscribe",
-        description="Live Arabic transcription of the system's audio output.",
+        description="Live Arabic subtitles for the system's audio output.",
     )
+    p.add_argument("--console", action="store_true",
+                   help="print to the terminal instead of showing subtitles on screen")
     p.add_argument("--file", help="transcribe this audio/video file at playback pace")
     p.add_argument("--sink", help="capture this output (node.name, see `wpctl status`) "
                                   "instead of following the default one")
-    p.add_argument("--model", default=WHISPER_MODEL, help=f"model size or path (default {WHISPER_MODEL})")
-    p.add_argument("--device", default=DEVICE, choices=["auto", "cuda", "cpu"])
-    p.add_argument("--beam", type=int, default=ASR_BEAM_SIZE, help="beam size")
+    # Model, device, step and output default to the saved settings (the ⚙
+    # dialog); a flag given here overrides them for this run and is not saved.
+    p.add_argument("--model", help="model size or folder (default: the saved setting)")
+    p.add_argument("--device", choices=["auto", "cuda", "cpu"])
+    p.add_argument("--beam", type=int, help="beam size")
     p.add_argument("--step", type=float, help="seconds between passes "
                                               f"(default {ASR_STEP_S_GPU} GPU / {ASR_STEP_S_CPU} CPU)")
     p.add_argument("--record", action="store_true",
                    help="keep audio + every pass under logs/session-<time>/ for replay")
     p.add_argument("--no-debug", action="store_true", help="no session log")
+    p.add_argument("--bypass-wm", action="store_true",
+                   help="overlay: bypass the window manager (above fullscreen video, "
+                        "on every workspace; moved only by dragging)")
+    p.add_argument("--wayland", action="store_true",
+                   help="overlay: run as a native Wayland window (GNOME will not keep it on top)")
     return p.parse_args(argv)
 
 
-def main(argv=None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
+# ── Terminal (step 1) ──────────────────────────────────────────────────
 
-    from src.audio.capture import CaptureError, SystemAudioSource
+def run_console(args) -> int:
+    from src.audio.capture import CaptureError
     from src.audio.engine import WhisperEngine
-    from src.audio.filesource import FileSource
     from src.audio.streamer import Streamer
     from src.audio.worker import Pipeline
+    from src.session import effective_args, open_session
     from src.sinks import ConsoleSink, TranscriptSink
+    from src.ui.settings import AppSettings, open_store
 
+    args = effective_args(args, AppSettings.load(open_store()))
     print(f"Loading Whisper {args.model}…", end="", flush=True)
     try:
-        engine = WhisperEngine(args.model, args.device, args.beam).load()
+        engine = WhisperEngine(args.model, args.device, args.beam, args.precision).load()
     except Exception as e:  # a missing model or a broken CUDA install: say which
         print(f"\nCould not load the model: {e}")
         return 1
-    print(f"\r\033[K", end="")
+    print("\r\033[K", end="")
 
     try:
-        source = FileSource(args.file) if args.file else SystemAudioSource(args.sink)
+        session = open_session(args, engine)
     except (CaptureError, OSError, RuntimeError) as e:
         print(f"Cannot read audio: {e}")
         return 1
 
-    step = args.step or (ASR_STEP_S_GPU if engine.device == "cuda" else ASR_STEP_S_CPU)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    transcript = LOGS_DIR / f"transcript-{stamp}.txt"
-    model_line = (f"{args.model} on {engine.device}/{engine.compute_type}, beam {args.beam}, "
-                  f"loaded in {engine.load_seconds:.1f}s")
-
-    if not args.no_debug:
-        log.open(new_log_path("live"), header=f"model {model_line}\nstep {step}s")
-
-    recorder = None
-    if args.record:
-        from src.audio.recorder import SessionRecorder
-        recorder = SessionRecorder(LOGS_DIR / f"session-{stamp}", {
-            "source": args.file or f"system audio ({args.sink or 'default output'})",
-            "model": args.model, "device": engine.device, "compute_type": engine.compute_type,
-            "beam": args.beam, "step_s": step,
-        })
-
-    print("LiveTranscribe — step 1 (terminal)")
-    print(f"  model    {model_line}")
-    if engine.device != "cuda":
-        print("           no GPU in use — passes are slow. `nvidia-smi` must work for CUDA.")
-    print(f"  source   {source.label}")
-    print(f"  step     {step:.1f}s between passes")
-    print(f"  text     {transcript.relative_to(LOGS_DIR.parent)}")
-    if log.enabled:
-        print(f"  log      {log.path.relative_to(LOGS_DIR.parent)}")
-    if recorder is not None:
-        print(f"  record   {recorder.directory.relative_to(LOGS_DIR.parent)}/")
+    print("LiveTranscribe — terminal")
+    print("\n".join(session.header()))
     print("Bold = final, grey = may still change.  Ctrl+C to stop.\n")
 
     pipeline = Pipeline(
-        source, Streamer(engine),
-        [ConsoleSink(), TranscriptSink(transcript, source.label)],
-        step, recorder,
+        session.source, Streamer(engine, language_check=args.arabic_only),
+        [ConsoleSink(), TranscriptSink(session.transcript, session.source.label)],
+        session.step_s, session.recorder,
     )
     pipeline.run()
 
-    summary = log.summary(step)
+    summary = log.summary(session.step_s)
     log.close()
     print("\n" + summary)
     return 0
+
+
+# ── Overlay (step 2) ───────────────────────────────────────────────────
+
+def choose_platform(args):
+    """XWayland on a Wayland desktop: the only way GNOME lets a window stay on top.
+
+    An explicit QT_QPA_PLATFORM is the user's choice and always wins.
+    """
+    if os.environ.get("QT_QPA_PLATFORM") or args.wayland or not OVERLAY_FORCE_XWAYLAND:
+        return
+    if os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+
+def run_overlay(args) -> int:
+    choose_platform(args)
+    os.environ.setdefault("QT_LOGGING_RULES", "*.debug=false;qt.qpa.*=false")
+
+    import signal
+
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QApplication
+
+    from src.ui.controller import Controller
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("LiveTranscribe")
+    app.setDesktopFileName("livetranscribe")
+    app.setQuitOnLastWindowClosed(False)     # the box hides itself when idle
+
+    controller = Controller(args, app)
+
+    # Ctrl+C in the terminal quits cleanly. Python only runs signal handlers
+    # between bytecodes, so a timer keeps the interpreter waking up.
+    signal.signal(signal.SIGINT, lambda *_: QTimer.singleShot(0, controller.quit))
+    wake = QTimer()
+    wake.start(250)
+    wake.timeout.connect(lambda: None)
+
+    return app.exec()
+
+
+def main(argv=None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    return run_console(args) if args.console else run_overlay(args)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,133 @@
+{
+  "about": "Accuracy corpus: YouTube videos spoken in Arabic that carry a manual (uploader-provided) Arabic caption track. Found by scripts/fetch_corpus.py --discover (76 qualified), fetched through CaptionForge by --fetch into <id>/audio.mp3 + <id>/ref.srt (gitignored). Each clip is scored over [start, end] seconds, snapped to whole caption cues. type: report = narrated news report; talk = studio interview/analysis; dialect = mostly a spoken dialect; control = must produce no words. reference — what the caption track turned out to be when read (fetch_corpus.py --inspect), which decides what a score against it means: 'human' = a person's verbatim transcript (punctuated, standard spelling) — CER is accuracy; 'asr-style' = normalised spelling (no hamza, ه for ة), no punctuation, disfluencies kept, ~7 s cues — a broadcaster's recogniser, perhaps post-edited: CER is agreement with a strong in-domain system, its errors counted as ours; 'msa-rendering' = human, but dialect speech rendered into Modern Standard Arabic — CER is not accuracy at all, only STREAM GAP (stream vs offline against the same text) means something.",
+  "clips": [
+    {
+      "id": "fHWChKL_mCc",
+      "type": "report",
+      "channel": "AlJazeera Arabic",
+      "title": "كير ستارمر.. صعود وسقوط رجل لا يبتسم",
+      "start": 30,
+      "end": 270,
+      "reference": "asr-style"
+    },
+    {
+      "id": "CKonPpwZPd8",
+      "type": "report",
+      "channel": "AlJazeera Arabic",
+      "title": "ما خفي عن مورينيو.. من \"زي ماريو\" إلى \"السبيشال وان\"",
+      "start": 30,
+      "end": 270,
+      "reference": "asr-style"
+    },
+    {
+      "id": "pbLs3rTKmG8",
+      "type": "talk",
+      "channel": "Aljazeera Mubasher",
+      "title": "ماذا تعني زيارة ترمب إلى الصين وسط التصعيد مع إيران؟",
+      "start": 0,
+      "end": 269,
+      "reference": "asr-style"
+    },
+    {
+      "id": "dp8sFWYnnMQ",
+      "type": "talk",
+      "channel": "Aljazeera Mubasher",
+      "title": "تباطؤ اقتصادي عالمي.. من سيدفع الثمن؟",
+      "start": 20,
+      "end": 260,
+      "reference": "asr-style"
+    },
+    {
+      "id": "uPCP3QhczUk",
+      "type": "talk",
+      "channel": "Aljazeera Mubasher",
+      "title": "كيف نجح الصاروخ اليمني في تجاوز الدفاعات الإسرائيلية المتطورة؟",
+      "start": 20,
+      "end": 260,
+      "reference": "asr-style"
+    },
+    {
+      "id": "Wz4BCyCl5nk",
+      "type": "dialect",
+      "channel": "Aljazeera Mubasher",
+      "title": "\"أول مقلوبة بعد الحرب\".. عائلة فلسطينية تتنفس الحياة بعد وقف إطلاق النار",
+      "start": 20,
+      "end": 260,
+      "reference": "asr-style"
+    },
+    {
+      "id": "Fckec5jxCZk",
+      "type": "talk",
+      "channel": "DW عربية",
+      "title": "زيارة غامضة إلى القاهرة... ماذا تريد واشنطن من السيسي الآن؟ | نيوز زووم",
+      "start": 60,
+      "end": 300,
+      "reference": "human"
+    },
+    {
+      "id": "M7YcCQYAGOs",
+      "type": "talk",
+      "channel": "DW عربية",
+      "title": "جيل Z يبتعد عن السياسة.. لماذا لا يسجل الشباب المغربي للتصويت؟ | نيوز زووم",
+      "start": 60,
+      "end": 300,
+      "reference": "asr-style"
+    },
+    {
+      "id": "VCp42q61_u8",
+      "type": "talk",
+      "channel": "سكاي نيوز عربية",
+      "title": "صراع الأجنحة في طهران.. على من يراهن ترامب داخل هيكل السلطة الإيراني؟",
+      "start": 20,
+      "end": 260,
+      "reference": "asr-style"
+    },
+    {
+      "id": "x-_kr7kwCM4",
+      "type": "dialect",
+      "channel": "TEDx Talks",
+      "title": "مين قال إذا حكينا عربي منبطل \"كول\"؟ : Suzanne Talhouk at TEDxBeirut (Lebanese)",
+      "start": 30,
+      "end": 270,
+      "reference": "msa-rendering"
+    },
+    {
+      "id": "ZiO76FXm15o",
+      "type": "dialect",
+      "channel": "TEDx Talks",
+      "title": "إزاي تتحول لأداة تأثير؟ | Afnan Hashem | TEDxAssuitUniversity (Egyptian)",
+      "start": 30,
+      "end": 270,
+      "reference": "msa-rendering"
+    },
+    {
+      "id": "1u36eUZW9F0",
+      "type": "dialect",
+      "channel": "TEDx Talks",
+      "title": "لا تفكر بالنجاح فكر بخلق عادة ناجحة: فاطمة جامع في TEDxYouth@Khartoum (Sudanese)",
+      "start": 30,
+      "end": 270,
+      "reference": "msa-rendering"
+    },
+    {
+      "id": "fY_t3wFX6q8",
+      "type": "control",
+      "channel": "Audiolaby",
+      "title": "همسات الليل: موسيقى هادئة للاسترخاء — instrumental, no voice",
+      "start": 600,
+      "end": 780,
+      "silent": true,
+      "reference": "none"
+    },
+    {
+      "id": "qR5ZxWTrYHA",
+      "type": "control",
+      "channel": "Al Jazeera English",
+      "title": "Israeli military checkpoint closures — English speech; v1 is Arabic-only",
+      "start": 0,
+      "end": 240,
+      "silent": true,
+      "reference": "none"
+    }
+  ]
+}

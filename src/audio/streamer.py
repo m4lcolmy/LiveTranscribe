@@ -42,7 +42,8 @@ from src.config import (
     END_SILENCE_S, TAIL_PAD_S, MAX_BUFFER_S, HARD_MAX_BUFFER_S,
     KEEP_AFTER_HARD_TRIM_S, PROMPT_CHARS, LINE_MAX_CHARS,
     COMMIT_TIME_TOLERANCE_S, ECHO_MAX_WORDS, AGREE_MAX_GAP, AGREE_MIN_RUN,
-    CUT_PAUSE_FRAMES,
+    CUT_PAUSE_FRAMES, TENTATIVE_GUARD_S, LANGUAGE_CHECK, LANGUAGE_MIN_ARABIC,
+    LANGUAGE_RECHECK_S, LANGUAGE_MIN_AUDIO_S, LANGUAGE_CONFIRMATIONS, LANGUAGE_CONFIRM_AFTER_S,
 )
 from src.core.arabic import compare_key
 
@@ -114,7 +115,12 @@ class Streamer:
                  keep_after_hard_trim_s=KEEP_AFTER_HARD_TRIM_S,
                  prompt_chars=PROMPT_CHARS, line_max_chars=LINE_MAX_CHARS,
                  commit_tolerance_s=COMMIT_TIME_TOLERANCE_S,
-                 echo_max_words=ECHO_MAX_WORDS):
+                 echo_max_words=ECHO_MAX_WORDS, tentative_guard_s=TENTATIVE_GUARD_S,
+                 language_check=LANGUAGE_CHECK, min_arabic=LANGUAGE_MIN_ARABIC,
+                 language_recheck_s=LANGUAGE_RECHECK_S,
+                 language_min_audio_s=LANGUAGE_MIN_AUDIO_S,
+                 language_confirmations=LANGUAGE_CONFIRMATIONS,
+                 language_confirm_after_s=LANGUAGE_CONFIRM_AFTER_S):
         if vad is None:
             from src.audio.vad import StreamingVad
             vad = StreamingVad()
@@ -133,7 +139,18 @@ class Streamer:
         self.line_max_chars = line_max_chars
         self.commit_tolerance_s = commit_tolerance_s
         self.echo_max_words = echo_max_words
+        self.tentative_guard_s = tentative_guard_s
+        self.language_check = language_check
+        self.min_arabic = min_arabic
+        self.language_recheck_s = language_recheck_s
+        self.language_min_audio_s = language_min_audio_s
+        self.language_confirmations = language_confirmations
+        self.language_confirm_after_s = language_confirm_after_s
+        self._foreign_votes = 0
 
+        self._arabic = True
+        self._language_checked_at: int | None = None   # stream sample of the last check
+        self.last_arabic_probability = 1.0
         self._audio = np.zeros(0, dtype=np.float32)
         self._start = 0                  # stream sample index of _audio[0]
         self._in_buffer: list[Word] = []  # committed, audio still in the buffer
@@ -185,12 +202,60 @@ class Streamer:
         if starting and self.vad.speech_samples(self._start, scored) / self.sr < self.min_first_pass_s:
             return None
 
+        if not self._is_arabic():
+            return self._drop_foreign()
         return self._pass()
 
     def finish(self) -> Update | None:
         """End of stream: close whatever utterance is open."""
         scored = min(self.fed, self.vad.scored_until)
         return self._close_utterance(self.vad.last_speech_end(self._start, scored))
+
+    # ── Language ───────────────────────────────────────────────────────
+
+    def _is_arabic(self) -> bool:
+        """Whisper's language detection, once the buffer is long enough to trust it.
+
+        A "not Arabic" verdict counts only when LANGUAGE_CONFIRMATIONS checks in
+        a row agree; after a first one the next check comes sooner.
+        """
+        if not self.language_check:
+            return True
+        if self.buffer_seconds < self.language_min_audio_s:
+            return self._arabic         # too little to judge: keep the last verdict
+        wait = self.language_confirm_after_s if self._foreign_votes else self.language_recheck_s
+        due = (self._language_checked_at is None
+               or self.fed - self._language_checked_at >= wait * self.sr)
+        if due:
+            p = self.engine.arabic_probability(self._audio[-10 * self.sr:])
+            self.last_arabic_probability = p
+            self._language_checked_at = self.fed
+            self.stats["language_checks"] += 1
+            if p >= self.min_arabic:
+                self._foreign_votes, self._arabic = 0, True
+            else:
+                self.stats["foreign_checks"] += 1
+                self._foreign_votes += 1
+                self._arabic = self._foreign_votes < self.language_confirmations
+        return self._arabic
+
+    def _drop_foreign(self) -> Update | None:
+        """Not Arabic: none of it is transcribed. What was already final stays final.
+
+        The last few seconds of audio are kept, untranscribed, so the verdict can
+        be taken again on enough of it — cutting back to a lead-in would leave
+        the buffer too short to judge, and the verdict stuck until a pause.
+        """
+        had_tentative = bool(self._tentative)
+        self._tentative = []
+        finished = [self._end_line()]
+        self._history.extend(w.text for w in self._in_buffer)
+        self._in_buffer = []
+        self._keep_last(self.language_min_audio_s + 1.0)
+        finished = [line for line in finished if line is not None]
+        if not finished and not had_tentative:
+            return None
+        return self._update(finished, None)
 
     # ── Passes ─────────────────────────────────────────────────────────
 
@@ -229,7 +294,13 @@ class Streamer:
         speech_s = self.vad.speech_samples(self._start, scored) / self.sr
         underway = bool(self._tentative or self._in_buffer)
 
+        foreign = False
         if last_speech is not None and (underway or speech_s >= self.min_utterance_speech_s):
+            foreign = not self._is_arabic()
+        if foreign:
+            self.stats["foreign_utterances"] += 1
+            new = []
+        elif last_speech is not None and (underway or speech_s >= self.min_utterance_speech_s):
             buffer_start = self._start / self.sr
             cut = min(self.fed, last_speech + int(self.tail_pad_s * self.sr))
             result, words, segments, prompt = self._transcribe(self._audio[: cut - self._start])
@@ -255,6 +326,8 @@ class Streamer:
         self._history.extend(w.text for w in self._in_buffer)
         self._in_buffer = []
         self._keep_last(self.lead_in_s)
+        self._language_checked_at = None          # the next utterance is checked afresh
+        self._arabic, self._foreign_votes = True, 0   # ...and presumed Arabic until then
 
         finished = [line for line in finished if line is not None]
         if not finished and report is None:
@@ -361,13 +434,21 @@ class Streamer:
             text = text[-self.prompt_chars:].split(" ", 1)[-1]
         return text
 
+    def _shown_tentative(self) -> list[Word]:
+        """The tentative words worth showing: not the half-heard one at the very end."""
+        if self.tentative_guard_s <= 0:
+            return list(self._tentative)
+        limit = self.now - self.tentative_guard_s
+        return [w for w in self._tentative if w.end <= limit]
+
     def _update(self, finished, report) -> Update:
+        shown = self._shown_tentative()
         return Update(
             finished=tuple(finished),
             committed=" ".join(w.text for w in self._line),
-            tentative=" ".join(w.text for w in self._tentative),
+            tentative=" ".join(w.text for w in shown),
             line_words=tuple(self._line),
-            tentative_words=tuple(self._tentative),
+            tentative_words=tuple(shown),
             report=report,
             now=self.now,
         )

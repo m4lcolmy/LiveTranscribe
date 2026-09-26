@@ -5,7 +5,9 @@ __pycache__/
 # Runs: session logs, transcripts, recorded sessions
 logs/
 
-# Test audio is not committed; manifests are.
+# Test audio and fetched captions are not committed; manifests are.
+tests/clips/*/
+tests/clips/candidates.json
 tests/clips/**/*.flac
 tests/clips/**/*.wav
 tests/clips/**/*.mp3

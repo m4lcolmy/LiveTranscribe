@@ -16,11 +16,19 @@ else**:
 | 2. Overlay | The step 1 text in a subtitle box at the bottom centre, above other windows | The app as a user sees it |
 | 3. Packaging | Launcher, icon, README | Installable |
 
-**Status 2026-09-26:** step 1A is built and running live on system audio
-(README.md). The first real-audio findings changed the design in three places —
-tolerant agreement, cuts at VAD pauses, loop cutting (MEASUREMENTS.md);
-`src/config.py` holds the current values, which supersede §5.5. Still open:
-the GPU (step 0.1) and step 1B's corpus with references.
+**Status 2026-09-26:** steps 0, 1A, 1B (first pass) and 2 are built. The GPU
+is measured (float16, 1 s step). The accuracy corpus exists — 12 YouTube clips
+with uploader-provided Arabic captions plus two silent controls, fetched through
+CaptionForge — and changed the design: a shorter buffer (15 → 8 s, because
+Whisper stops after the first sentence of a buffer), a per-utterance language
+check (English speech was written out in Arabic letters), and a reproducible
+fixed-clock replay for tuning (MEASUREMENTS.md). Step 2's two-line subtitle box
+became, at the user's request, a fixed-size scrollable transcript panel with
+selectable text and a saved-settings dialog (model, device, precision,
+interval, source, text size, opacity). `src/config.py` holds the current
+values, which supersede §5.5. Still open: the structural fix for the stalled
+sentence (re-run a pass when speech is left untranscribed), a human-verbatim
+reference for more than one clip, and step 3.
 
 Step 2 does not start until step 1 passes its exit gate (§7). A good-looking
 box around wrong text is worth nothing. Transcription is measured first, and
@@ -447,6 +455,19 @@ it.
 
 **Gate:** 20 minutes of a fullscreen Arabic video with the subtitles visible
 throughout and nothing getting in the way.
+
+**Built 2026-09-26, checked from outside the app** (xprop/xwininfo on the live
+window, through XWayland): `_NET_WM_STATE_ABOVE` and `_NET_WM_STATE_STICKY`
+set, `_NET_WM_DESKTOP` = all, WM_HINTS input = False (never focused),
+skip-taskbar/pager, geometry 1100×136 at x=409 — centred on 1920 — with the
+bottom edge 8% above the usable area, input shape = the drawn box only, tray
+item registered with the AppIndicator host, Ctrl+C exits with no pw-record
+left behind. mutter marks the window DEMANDS_ATTENTION when it maps; GNOME
+Shell 46 ignores that for skip-taskbar windows (windowAttentionHandler.js), so
+no "is ready" notification. `--bypass-wm` gives an override-redirect window
+(fallback if fullscreen video covers the managed one). Not checkable from
+outside, so the gate stays a human test: stacking over fullscreen Chrome/mpv,
+dragging, the menu, click-through in use.
 
 ### Step 3: Packaging (≈ half a day)
 

@@ -82,6 +82,9 @@ class SystemAudioSource:
     # ── Lifecycle ──────────────────────────────────────────────────────
 
     def start(self):
+        """Start capturing; also after a stop() (resume from pause)."""
+        self._stop.clear()
+        self._queue = queue.Queue()
         self._current_sink = self.sink or default_sink()
         self._reader = threading.Thread(target=self._read_loop, name="capture", daemon=True)
         self._reader.start()

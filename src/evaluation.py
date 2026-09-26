@@ -29,19 +29,62 @@ from src.core.arabic import compare_key
 # ── Text ───────────────────────────────────────────────────────────────
 
 _SRT_TIMING = re.compile(r"^\d\d:\d\d:\d\d[,.]\d+\s*-->")
+_SRT_TIMES = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d+)\s*-->\s*(\d+):(\d\d):(\d\d)[,.](\d+)")
 _TRANSCRIPT_STAMP = re.compile(r"^\[[\d:.]+\]\s*")
 _TAGS = re.compile(r"<[^>]+>|\{[^}]+\}")
+# [موسيقى], [تصفيق], [Music]: annotations a captioner adds, not speech.
+_ANNOTATION = re.compile(r"\[[^\]]*\]")
 
 
-def load_reference(path) -> str:
-    """Plain text, an SRT, or a LiveTranscribe transcript — as one string."""
+def _clean(line: str) -> str:
+    return _ANNOTATION.sub(" ", _TAGS.sub("", _TRANSCRIPT_STAMP.sub("", line))).strip()
+
+
+def load_cues(path) -> list[tuple[float, float, str]]:
+    """(start, end, text) for every cue of an SRT."""
+    cues, times, text = [], None, []
+    for raw in list(open(path, encoding="utf-8-sig")) + [""]:
+        line = raw.strip()
+        m = _SRT_TIMES.search(line)
+        if m:
+            g = [int(x) for x in m.groups()]
+            times = (g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000,
+                     g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000)
+            text = []
+        elif not line:
+            if times is not None and text:
+                cues.append((times[0], times[1], _clean(" ".join(text))))
+            times, text = None, []
+        elif times is not None:
+            text.append(line)
+    return cues
+
+
+def load_reference(path, start: float | None = None, end: float | None = None
+                   ) -> tuple[str, float | None, float | None]:
+    """The reference text, and the span it covers.
+
+    Plain text or a LiveTranscribe transcript: all of it, span unknown. An SRT
+    with a window: only the cues wholly inside [start, end], and the span from
+    the first of them to the last — the audio to score is cut to that span, so
+    no half-cue sits at either edge.
+    """
+    if str(path).lower().endswith(".srt"):
+        cues = load_cues(path)
+        if start is not None or end is not None:
+            lo, hi = start or 0.0, end if end is not None else float("inf")
+            cues = [c for c in cues if c[0] >= lo and c[1] <= hi]
+        if not cues:
+            return "", None, None
+        return " ".join(c[2] for c in cues), cues[0][0], cues[-1][1]
+
     lines = []
     for raw in open(path, encoding="utf-8-sig"):
         line = raw.strip()
         if not line or line.startswith("#") or line.isdigit() or _SRT_TIMING.match(line):
             continue
-        lines.append(_TAGS.sub("", _TRANSCRIPT_STAMP.sub("", line)))
-    return " ".join(lines)
+        lines.append(_clean(line))
+    return " ".join(lines), None, None
 
 
 def levenshtein(a, b) -> int:
@@ -96,6 +139,7 @@ class TextScore:
     coverage: float
     ref_words: int
     hyp_words: int
+    ref_chars: int = 0
 
 
 def score_text(hyp: str, ref: str) -> TextScore:
@@ -106,7 +150,7 @@ def score_text(hyp: str, ref: str) -> TextScore:
     return TextScore(
         cer=cer, wer=(s + dl + ins) / max(1, len(rw)),
         coverage=(len(rw) - dl) / max(1, len(rw)),
-        ref_words=len(rw), hyp_words=len(hw),
+        ref_words=len(rw), hyp_words=len(hw), ref_chars=len(r),
     )
 
 

@@ -188,3 +188,48 @@ def test_the_token_budget_grows_with_the_buffer_and_leaves_room_for_the_prompt()
     # A long prompt must never push prompt + budget past Whisper's 448 tokens.
     long_prompt = " ".join(["كلمة"] * 200)          # 600 tokens, cut to 223 by faster-whisper
     assert engine._token_budget(25.0, long_prompt) + 1 + 223 + 3 <= 448
+
+
+# ── References from human captions ─────────────────────────────────────
+
+from src.evaluation import load_cues, load_reference, score_text   # noqa: E402
+
+SRT = """1
+00:00:01,000 --> 00:00:03,500
+[موسيقى]
+
+2
+00:00:04,000 --> 00:00:06,000
+قال رئيس الوزراء
+في مؤتمر صحفي
+
+3
+00:00:06,500 --> 00:00:09,000
+- إن الحكومة ستعلن القرار عام ٢٠٢٦.
+
+4
+00:01:10,000 --> 00:01:12,000
+<i>وانتهى المؤتمر</i>
+"""
+
+
+def test_srt_cues_keep_their_times_and_lose_annotations_and_tags(tmp_path):
+    path = tmp_path / "ref.srt"
+    path.write_text(SRT, encoding="utf-8")
+    cues = load_cues(path)
+    assert [c[:2] for c in cues] == [(1.0, 3.5), (4.0, 6.0), (6.5, 9.0), (70.0, 72.0)]
+    assert cues[0][2] == ""                                  # [موسيقى] is not speech
+    assert cues[1][2] == "قال رئيس الوزراء في مؤتمر صحفي"   # a two-line cue is one text
+    assert cues[3][2] == "وانتهى المؤتمر"
+
+
+def test_a_window_takes_only_whole_cues_and_reports_their_span(tmp_path):
+    path = tmp_path / "ref.srt"
+    path.write_text(SRT, encoding="utf-8")
+    text, start, end = load_reference(path, 3.8, 10.0)
+    assert (start, end) == (4.0, 9.0)
+    assert text.startswith("قال رئيس الوزراء") and "المؤتمر" not in text
+
+
+def test_digits_score_the_same_in_either_script():
+    assert score_text("ستعلن القرار عام 2026", "ستعلن القرار عام ٢٠٢٦").cer == 0.0

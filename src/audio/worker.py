@@ -5,10 +5,16 @@ problem in itself: the next one starts as soon as it returns and simply covers
 more audio — nothing is dropped, updates just come less often. The session log's
 summary says how often that happened.
 
-Step 1 runs this on the main thread (Ctrl+C stops it). Step 2 will run the
-same loop on a worker thread behind the overlay.
+The terminal mode runs this on the main thread (Ctrl+C stops it); the overlay
+runs it on a worker thread and drives it with `stop()` and `set_paused()`.
+Both only set flags: the loop applies them itself, so the streamer is only
+ever touched from the one thread that runs it.
+
+Pausing stops the capture process itself, so nothing is being recorded while
+paused, and closes the utterance in progress, so its words are not lost.
 """
 
+import threading
 import time
 
 import numpy as np
@@ -39,17 +45,37 @@ class Pipeline:
         self.recorder = recorder
         self.gain = gain or AutoGain()
         self.interrupted = False
+        self.ended = False             # a file source played to its end
+        self.paused = False
+        self._want_paused = False
+        self._quit = threading.Event()
+        self._next_pass = self._next_status = 0.0
+
+    # ── Control, from any thread ───────────────────────────────────────
+
+    def stop(self):
+        self._quit.set()
+
+    def set_paused(self, paused: bool):
+        self._want_paused = paused
+
+    # ── The loop ───────────────────────────────────────────────────────
 
     def run(self):
-        self.source.start()
-        log.event("START", f"{self.source.label} step={self.step_s:.2f}s")
-        now = time.monotonic()
-        next_pass, next_status = now + self.step_s, now
+        self._resume()
         try:
-            while True:
-                wait = min(next_pass, next_status) - time.monotonic()
+            while not self._quit.is_set():
+                if self._want_paused != self.paused:
+                    self._suspend() if self._want_paused else self._resume()
+                    self.paused = self._want_paused
+                if self.paused:
+                    self._quit.wait(0.1)
+                    continue
+
+                wait = min(self._next_pass, self._next_status) - time.monotonic()
                 audio = self.source.read(timeout=max(0.0, wait))
                 if audio is None:              # a file that has finished playing
+                    self.ended = True
                     break
                 if audio.size:
                     if self.recorder is not None:
@@ -57,29 +83,41 @@ class Pipeline:
                     self.streamer.feed(self.gain(audio))
 
                 now = time.monotonic()
-                if now >= next_pass:
+                if now >= self._next_pass:
                     update = self.streamer.step()
-                    next_pass = now + self.step_s
+                    self._next_pass = now + self.step_s
                     if update is not None:
                         self._publish(update)
-                if now >= next_status:
+                if now >= self._next_status:
                     self._status()
-                    next_status = now + STATUS_EVERY_S
+                    self._next_status = now + STATUS_EVERY_S
         except KeyboardInterrupt:
             self.interrupted = True
         finally:
-            self.source.stop()
             try:
-                self.streamer.feed(self.gain.flush())
-                update = self.streamer.finish()
-                if update is not None:
-                    self._publish(update)
+                if not self.paused:
+                    self._suspend()
             except KeyboardInterrupt:
                 pass
             for sink in self.sinks:
                 sink.close()
             if self.recorder is not None:
                 self.recorder.close()
+
+    def _resume(self):
+        self.source.start()
+        log.event("START", f"{self.source.label} step={self.step_s:.2f}s")
+        now = time.monotonic()
+        self._next_pass, self._next_status = now + self.step_s, now
+
+    def _suspend(self):
+        """Stop capturing and close the utterance in progress."""
+        self.source.stop()
+        log.event("STOP", self.source.label)
+        self.streamer.feed(self.gain.flush())
+        update = self.streamer.finish()
+        if update is not None:
+            self._publish(update)
 
     # ── Output ─────────────────────────────────────────────────────────
 

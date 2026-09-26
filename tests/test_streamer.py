@@ -151,6 +151,17 @@ def test_a_word_cut_by_the_buffer_edge_is_never_committed():
             assert "~" not in line.text
 
 
+def test_the_guard_hides_only_the_words_at_the_very_end_and_agreement_is_unchanged():
+    words = script(10)
+    plain = Streamer(ScriptedEngine(words), FakeVad([(0, 4.0)]))
+    guarded = Streamer(ScriptedEngine(words), FakeVad([(0, 4.0)]), tentative_guard_s=0.5)
+    a, b = run(plain, 3.0), run(guarded, 3.0)
+    assert b[-1].committed == a[-1].committed            # what becomes final is the same
+    shown_a, shown_b = a[-1].tentative.split(), b[-1].tentative.split()
+    assert shown_b == shown_a[: len(shown_b)] and len(shown_b) < len(shown_a)
+    assert all(w.end <= guarded.now - 0.5 for w in b[-1].tentative_words)
+
+
 def test_nothing_runs_before_enough_speech():
     engine = ScriptedEngine(script(3))
     s = Streamer(engine, FakeVad([(0, 5.0)]), min_first_pass_s=1.2)
@@ -226,6 +237,84 @@ def test_two_utterances_make_two_lines():
     updates = run(s, 9.0, chunk_s=0.5)
     lines = [line for u in updates for line in u.finished]
     assert [line.text for line in lines] == ["u0 u1 u2 u3 u4", "u5 u6 u7 u8 u9"]
+
+
+# ── Language ───────────────────────────────────────────────────────────
+
+class Bilingual(ScriptedEngine):
+    """Arabic except inside the given spans, where the audio is 'English'."""
+
+    def __init__(self, script, english):
+        super().__init__(script)
+        self.english = english
+        self.checks = 0
+
+    def arabic_probability(self, audio):
+        self.checks += 1
+        end = (float(audio[-1]) + 1) / SR
+        return 0.01 if any(a <= end - 0.5 <= b for a, b in self.english) else 0.95
+
+
+def test_a_long_english_utterance_is_dropped_once_there_is_enough_audio_to_judge():
+    engine = Bilingual(script(40), english=[(0, 20)])
+    s = Streamer(engine, FakeVad([(0, 16.0)]), language_min_audio_s=6.0)
+    updates = run(s, 19.0, chunk_s=0.5)
+    words = committed_words(updates)
+    assert s.stats["foreign_checks"] >= 1 and s.stats["foreign_utterances"] == 1
+    # Before 6 s there was nothing to judge on; after it, nothing more gets through.
+    assert all(float(w[1:]) * 0.4 < 8.0 for w in words)
+
+
+def test_arabic_resumes_after_english_without_a_pause_between():
+    # 0-12 s English, then Arabic straight on: no silence to close the utterance.
+    words = [Word(f"e{i}", i * 0.4, i * 0.4 + 0.3) for i in range(30)] + \
+            [Word(f"a{i}", 12.0 + i * 0.4, 12.3 + i * 0.4) for i in range(40)]
+    engine = Bilingual(words, english=[(0, 12.0)])
+    s = Streamer(engine, FakeVad([(0, 28.0)]), language_min_audio_s=6.0)
+    updates = run(s, 30.0, chunk_s=0.5)
+    arabic = [w for w in committed_words(updates) if w.startswith("a")]
+    assert len(arabic) >= 30                     # the verdict came back, speech resumed
+
+
+def test_one_foreign_verdict_alone_drops_nothing():
+    class OneBadCheck(Bilingual):
+        def arabic_probability(self, audio):
+            self.checks += 1
+            return 0.01 if self.checks == 1 else 0.95   # a single false alarm
+    engine = OneBadCheck(script(40), english=[])
+    s = Streamer(engine, FakeVad([(0, 16.0)]), language_min_audio_s=6.0)
+    updates = run(s, 19.0, chunk_s=0.5)
+    assert committed_words(updates) == [w.text for w in script(40)]
+
+
+def test_a_short_utterance_is_never_judged():
+    engine = Bilingual(script(10), english=[(0, 10)])
+    s = Streamer(engine, FakeVad([(0, 4.0)]), language_min_audio_s=6.0)
+    run(s, 7.0, chunk_s=0.5)
+    assert engine.checks == 0
+
+
+def test_arabic_after_english_is_transcribed_once_rechecked():
+    words = script(5) + [Word(f"a{i}", 6.0 + i * 0.4, 6.3 + i * 0.4) for i in range(5)]
+    engine = Bilingual(words, english=[(0, 3.0)])
+    s = Streamer(engine, FakeVad([(0, 2.0), (6.0, 8.0)]), language_min_audio_s=1.0,
+                 language_confirmations=1)
+    updates = run(s, 10.0, chunk_s=0.5)
+    assert committed_words(updates) == ["a0", "a1", "a2", "a3", "a4"]
+
+
+def test_the_language_is_checked_at_the_start_and_then_only_every_few_seconds():
+    engine = Bilingual(script(150), english=[])
+    s = Streamer(engine, FakeVad([(0, 60.0)]), language_recheck_s=5.0, language_min_audio_s=1.0)
+    run(s, 60.0)
+    assert 10 <= engine.checks <= 14                     # ~60 s / 5 s, not once per pass
+
+
+def test_the_check_can_be_turned_off():
+    engine = Bilingual(script(10), english=[(0, 10)])
+    s = Streamer(engine, FakeVad([(0, 4.0)]), language_check=False, language_min_audio_s=1.0)
+    updates = run(s, 7.0, chunk_s=0.5)
+    assert engine.checks == 0 and committed_words(updates)
 
 
 # ── Long speech: trimming must lose nothing and repeat nothing ─────────
