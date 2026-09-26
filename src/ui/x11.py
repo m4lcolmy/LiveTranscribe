@@ -87,3 +87,53 @@ def make_sticky(window_id: int) -> bool:
         return True
     finally:
         lib.XCloseDisplay(display)
+
+
+# ── Which part of the window takes the mouse ───────────────────────────
+
+class _XRectangle(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_short), ("y", ctypes.c_short),
+                ("width", ctypes.c_ushort), ("height", ctypes.c_ushort)]
+
+
+_SHAPE_INPUT = 2
+_SHAPE_SET = 0
+_UNSORTED = 0
+
+
+def set_input_region(window_id: int, rects: list[tuple[int, int, int, int]] | None) -> bool:
+    """Let only `rects` (x, y, w, h in window pixels) take the mouse; None restores the whole window.
+
+    Qt's WindowTransparentForInput is all or nothing — a click-through window
+    whose own buttons ignore the mouse is a trap (a user checked the box and
+    could not click anything in the app again, 2026-09-26). The X Shape
+    extension's input region can leave a part clickable, and mutter honours it
+    for XWayland windows, as it honours Qt's all-or-nothing version.
+    """
+    lib = _libx11()
+    try:
+        ext = ctypes.CDLL(ctypes.util.find_library("Xext") or "libXext.so.6")
+    except OSError:
+        return False
+    if lib is None:
+        return False
+    ext.XShapeCombineRectangles.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.POINTER(_XRectangle), ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    ext.XShapeCombineMask.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_ulong, ctypes.c_int]
+    display = lib.XOpenDisplay(None)
+    if not display:
+        return False
+    try:
+        if rects is None:
+            ext.XShapeCombineMask(display, window_id, _SHAPE_INPUT, 0, 0, 0, _SHAPE_SET)
+        else:
+            array = (_XRectangle * len(rects))(*[_XRectangle(*r) for r in rects])
+            ext.XShapeCombineRectangles(display, window_id, _SHAPE_INPUT, 0, 0,
+                                        array, len(rects), _SHAPE_SET, _UNSORTED)
+        lib.XFlush(display)
+        return True
+    finally:
+        lib.XCloseDisplay(display)

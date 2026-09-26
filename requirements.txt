@@ -23,8 +23,7 @@ soundfile>=0.13.1             # --record writes FLAC
 # ── Tests ──────────────────────────────────────────────────────────────
 pytest>=9.0.0
 
-# ── GPU (~1.4 GB) ──────────────────────────────────────────────────────
-# src/core/device.py finds and loads these itself; without them, or without
-# a working driver (`nvidia-smi`), the app runs on CPU.
-nvidia-cublas-cu12>=12.9.2
-nvidia-cudnn-cu12>=9.26.0
+# ── GPU ────────────────────────────────────────────────────────────────
+# NVIDIA's CUDA libraries are in requirements-gpu.txt (~1.4 GB), installed only
+# where there is an NVIDIA GPU. Without them — or without a working driver
+# (`nvidia-smi`) — the app runs on the CPU.

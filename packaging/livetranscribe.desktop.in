@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=LiveTranscribe
+GenericName=Live Arabic Subtitles
+Comment=Live Arabic subtitles for anything your computer plays — offline, on your own GPU
+Exec="@APP_DIR@/run.sh"
+Path=@APP_DIR@
+Icon=livetranscribe
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=subtitles;captions;transcription;transcribe;arabic;whisper;live;
+StartupNotify=false
+StartupWMClass=LiveTranscribe
+Actions=Record;Reset;
+
+[Desktop Action Record]
+Name=Start and record the session
+Exec="@APP_DIR@/run.sh" --record
+
+[Desktop Action Reset]
+Name=Start with default settings
+Exec="@APP_DIR@/run.sh" --reset-settings

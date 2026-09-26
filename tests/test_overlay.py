@@ -134,6 +134,30 @@ def test_text_size_changes_do_not_resize_the_window(window):
     assert window.view.font().pixelSize() == 40
 
 
+def test_click_through_leaves_the_header_clickable_under_x11(window, monkeypatch):
+    import src.ui.x11 as x11
+    regions = []
+    monkeypatch.setattr(x11, "set_input_region", lambda wid, rects: regions.append(rects) or True)
+    window._shape_input = True                       # as under XWayland
+    window.set_click_through(True)
+    assert not window.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    (x, y, w, h), = regions[-1]
+    header = window.header.geometry()
+    assert x <= header.x() and w >= header.width() and y + h >= header.bottom()
+    assert h < window.height() / 2                   # the transcript itself passes clicks
+    assert window.header.lock_button.isChecked()
+    window.set_click_through(False)
+    assert regions[-1] is None                       # the whole window again
+    assert not window.header.lock_button.isChecked()
+
+
+def test_the_lock_button_asks_for_the_opposite_of_the_current_state(window):
+    asked = []
+    window.click_through_toggled.connect(asked.append)
+    window.header.lock_button.click()
+    assert asked == [True]
+
+
 def test_click_through_is_a_window_flag(window):
     window.apply_settings(AppSettings(click_through=True))
     assert window.windowFlags() & Qt.WindowType.WindowTransparentForInput
@@ -248,3 +272,126 @@ def test_pause_stops_capture_resume_restarts_it_and_stop_ends_the_thread(app):
     assert not thread.is_alive()
     assert sink.closed
     assert source.stops == 2
+
+
+# ── No caret; selection, copy, and translation ─────────────────────────
+
+from PyQt6.QtGui import QTextCursor                     # noqa: E402
+from PyQt6.QtTest import QTest                          # noqa: E402
+
+
+def select(view, start=0, end=None):
+    cur = QTextCursor(view.document())
+    cur.setPosition(start)
+    cur.setPosition(end if end is not None else view.document().characterCount() - 1,
+                    QTextCursor.MoveMode.KeepAnchor)
+    view.setTextCursor(cur)
+
+
+def test_there_is_no_text_cursor_and_ctrl_c_still_copies(app, window):
+    view = window.view
+    assert view.cursorWidth() == 0
+    assert not view.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByKeyboard
+    window.show_update(update(["نص للنسخ"]))
+    select(view, 0, 4)
+    QApplication.clipboard().clear()
+    QTest.keyClick(view, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    assert QApplication.clipboard().text() == "نص ل"
+
+
+def test_the_translate_button_shows_only_on_a_selection_in_button_mode(app, window):
+    view = window.view
+    window.show_update(update(["جملة يمكن ترجمتها"]))
+    view.set_translation("button", "en")
+    select(view, 0, 4)
+    assert view.translate_button.isVisible()
+    view.setTextCursor(QTextCursor(view.document()))       # selection cleared
+    assert not view.translate_button.isVisible()
+    view.set_translation("off", "en")
+    select(view, 0, 4)
+    assert not view.translate_button.isVisible()
+
+
+def test_automatic_mode_translates_on_release_and_shows_the_result(app, window, monkeypatch):
+    import src.ui.translate as tr
+    asked = []
+    monkeypatch.setattr(tr, "translate", lambda text, target, **_: asked.append((text, target)) or "hello")
+    view = window.view
+    window.show_update(update(["مرحبا"]))
+    view.set_translation("auto", "en")
+    select(view, 0, 5)
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton)
+    assert asked == [("مرحبا", "en")]
+    assert wait_until(lambda: view.popup.text.toPlainText() == "hello", app)
+    view.popup.hide()
+
+
+def test_a_refusal_from_google_is_said_plainly(app, window, monkeypatch):
+    import src.ui.translate as tr
+
+    def refuse(text, target, **_):
+        raise tr.TranslationError(tr.RATE_LIMITED)
+    monkeypatch.setattr(tr, "translate", refuse)
+    view = window.view
+    window.show_update(update(["مرحبا"]))
+    view.set_translation("button", "tr")
+    select(view, 0, 5)
+    view.translate_selection()
+    assert wait_until(lambda: "too many requests" in view.popup.text.toPlainText(), app)
+    view.popup.hide()
+
+
+def test_the_right_click_menu_offers_translation_and_remembers_the_choice(app, window):
+    view = window.view
+    chosen = []
+    view.translation_changed.connect(lambda m, t: chosen.append((m, t)))
+    view.set_translation("button", "en")
+    menu = view.build_context_menu()
+    google = next(a.menu() for a in menu.actions() if a.menu() and a.text() == "Google Translate")
+    auto = next(a for a in google.actions() if a.text().startswith("Translate as soon"))
+    auto.trigger()
+    assert chosen[-1] == ("auto", "en") and view.translate_mode == "auto"
+    into = next(a.menu() for a in google.actions() if a.menu())
+    next(a for a in into.actions() if a.text() == "Türkçe").trigger()
+    assert chosen[-1] == ("auto", "tr")
+
+
+def test_translation_settings_are_saved_and_need_no_restart(store):
+    s = AppSettings(translate="auto", translate_to="tr")
+    s.save(store)
+    assert AppSettings.load(store).translate == "auto"
+    assert AppSettings().needs(s) == "window"
+
+
+# ── The endpoint's answers ─────────────────────────────────────────────
+
+def test_the_translation_is_read_out_of_googles_nested_lists():
+    from src.ui.translate import parse
+    body = '[[["Hello, ","مرحبا، ",null,null,10],["how are you?","كيف حالك؟",null,null,10]],null,"ar"]'
+    assert parse(body) == "Hello, how are you?"
+
+
+def test_the_sorry_page_and_http_429_mean_rate_limited(monkeypatch):
+    import io
+    import urllib.error
+    import src.ui.translate as tr
+    with pytest.raises(tr.TranslationError, match="too many requests"):
+        tr.parse("<html><head><title>Sorry...</title>")
+
+    def http_429(*_a, **_k):
+        raise urllib.error.HTTPError("u", 429, "Too Many Requests", {}, io.BytesIO(b""))
+    monkeypatch.setattr(tr.urllib.request, "urlopen", http_429)
+    with pytest.raises(tr.TranslationError, match="too many requests"):
+        tr.translate("مرحبا", "en")
+
+
+def test_a_second_start_shows_the_running_one_instead(app):
+    from src.ui.single import SingleInstance
+    first = SingleInstance("livetranscribe-test-instance")
+    assert first.claim()
+    shown = []
+    first.activated.connect(lambda: shown.append(True))
+    second = SingleInstance("livetranscribe-test-instance")
+    assert not second.claim()
+    assert wait_until(lambda: shown, app)
+    first.server.close()

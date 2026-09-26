@@ -1,0 +1,8 @@
+# CUDA libraries for faster-whisper on an NVIDIA GPU (~1.4 GB).
+#
+#   pip install -r requirements-gpu.txt
+#
+# src/core/device.py finds and loads them itself — no LD_LIBRARY_PATH — and the
+# app falls back to the CPU when they, or a working driver, are missing.
+nvidia-cublas-cu12>=12.9.2
+nvidia-cudnn-cu12>=9.26.0

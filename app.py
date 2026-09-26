@@ -44,6 +44,8 @@ def parse_args(argv):
     p.add_argument("--bypass-wm", action="store_true",
                    help="overlay: bypass the window manager (above fullscreen video, "
                         "on every workspace; moved only by dragging)")
+    p.add_argument("--reset-settings", action="store_true",
+                   help="forget all saved settings and the window's place, then start")
     p.add_argument("--wayland", action="store_true",
                    help="overlay: run as a native Wayland window (GNOME will not keep it on top)")
     return p.parse_args(argv)
@@ -116,12 +118,24 @@ def run_overlay(args) -> int:
 
     from src.ui.controller import Controller
 
+    from src.ui.single import SingleInstance
+    from src.ui.tray import make_icon
+
     app = QApplication(sys.argv)
     app.setApplicationName("LiveTranscribe")
     app.setDesktopFileName("livetranscribe")
-    app.setQuitOnLastWindowClosed(False)     # the box hides itself when idle
+    app.setWindowIcon(make_icon())
+    app.setQuitOnLastWindowClosed(False)     # the tray keeps it going
+
+    # Started a second time (from the app menu, say): show the running one
+    # instead of opening a second window that captures the same audio again.
+    instance = SingleInstance()
+    if not instance.claim():
+        print("LiveTranscribe is already running — showing its window.")
+        return 0
 
     controller = Controller(args, app)
+    instance.activated.connect(controller.window.show_window)
 
     # Ctrl+C in the terminal quits cleanly. Python only runs signal handlers
     # between bytecodes, so a timer keeps the interpreter waking up.
@@ -133,8 +147,18 @@ def run_overlay(args) -> int:
     return app.exec()
 
 
+def reset_settings():
+    from src.ui.settings import open_store
+    store = open_store()
+    store.clear()
+    store.sync()
+    print(f"Saved settings cleared ({store.fileName()}).")
+
+
 def main(argv=None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.reset_settings:
+        reset_settings()
     return run_console(args) if args.console else run_overlay(args)
 
 

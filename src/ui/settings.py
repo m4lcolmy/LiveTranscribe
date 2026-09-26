@@ -25,6 +25,7 @@ from src.config import (
     DEVICE, OVERLAY_FONT_MAX_PX, OVERLAY_FONT_MIN_PX, OVERLAY_FONT_PX, OVERLAY_OPACITY,
     WHISPER_MODEL,
 )
+from src.ui.translate import LANGUAGES, MODES, default_target
 
 SETTINGS_ORG = "LiveTranscribe"
 SETTINGS_APP = "LiveTranscribe"
@@ -46,6 +47,8 @@ class AppSettings:
     show_tentative: bool = True       # show words that may still change
     arabic_only: bool = True          # drop speech Whisper hears as another language
     click_through: bool = False
+    translate: str = "button"         # off | button | auto — Google Translate on selection
+    translate_to: str = default_target()
 
     @classmethod
     def load(cls, store: QSettings) -> "AppSettings":
@@ -223,10 +226,28 @@ class SettingsDialog(QDialog):
         self.show_tentative.setChecked(current.show_tentative)
         form.addRow("", self.show_tentative)
 
-        self.click_through = QCheckBox("Click-through — the window ignores the mouse")
+        # Google Translate
+        self.translate = QComboBox()
+        for value, label in MODES:
+            self.translate.addItem(label, value)
+        self.translate.setCurrentIndex(max(0, self.translate.findData(current.translate)))
+        form.addRow("Google Translate", self.translate)
+        self.translate_to = QComboBox()
+        for code, name in LANGUAGES:
+            self.translate_to.addItem(name, code)
+        self.translate_to.setCurrentIndex(max(0, self.translate_to.findData(current.translate_to)))
+        form.addRow("Translate into", self.translate_to)
+        privacy = QLabel("Only text you select is sent to Google; transcription itself never "
+                         "leaves this computer.")
+        privacy.setWordWrap(True)
+        privacy.setStyleSheet("color: palette(mid);")
+        form.addRow("", privacy)
+
+        self.click_through = QCheckBox("Click-through — clicks on the text pass through")
         self.click_through.setChecked(current.click_through and click_through_allowed)
         self.click_through.setEnabled(click_through_allowed)
-        self.click_through.setToolTip("Turn it off again from the tray icon's menu"
+        self.click_through.setToolTip("Clicks on the transcript go to the window under it; the top "
+                                      "bar stays clickable. Turn it off with its lock button."
                                       if click_through_allowed else
                                       "Needs a tray icon to turn it back off")
         form.addRow("", self.click_through)
@@ -238,7 +259,8 @@ class SettingsDialog(QDialog):
 
         # Long model descriptions must not squeeze the labels: the drop-downs
         # size to a fixed number of characters and elide the rest.
-        for combo in (self.model, self.device, self.precision, self.step, self.sink):
+        for combo in (self.model, self.device, self.precision, self.step, self.sink,
+                      self.translate, self.translate_to):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(34)
 
@@ -274,4 +296,6 @@ class SettingsDialog(QDialog):
             show_tentative=self.show_tentative.isChecked(),
             arabic_only=self.arabic_only.isChecked(),
             click_through=self.click_through.isChecked(),
+            translate=self.translate.currentData(),
+            translate_to=self.translate_to.currentData(),
         )

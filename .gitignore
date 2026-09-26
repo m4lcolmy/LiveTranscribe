@@ -15,3 +15,6 @@ tests/clips/**/*.mp4
 tests/clips/**/*.m4a
 tests/clips/**/*.webm
 tests/clips/**/*.opus
+
+# The installer's Python environment
+.venv/

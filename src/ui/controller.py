@@ -78,14 +78,16 @@ class Controller(QObject):
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = QSystemTrayIcon(make_icon(), self)
             self.tray.setToolTip("LiveTranscribe")
-        if self.tray is None:
-            self.prefs.click_through = False
+        if self.tray is None and QGuiApplication.platformName() != "xcb":
+            self.prefs.click_through = False      # nothing would be left to click
 
         self.window = TranscriptWindow(self.store, bypass_wm=cli.bypass_wm)
         self.window.apply_settings(self.prefs)
         self.sink = OverlaySink()
         self.sink.updated.connect(self.window.show_update)
         self.sink.level.connect(self._show_level)
+        self.window.view.translation_changed.connect(self._translation_chosen)
+        self.window.click_through_toggled.connect(self._set_click_through)
         self.window.pause_clicked.connect(self.toggle_pause)
         self.window.settings_clicked.connect(self.open_settings)
         self.window.quit_clicked.connect(self.quit)
@@ -117,7 +119,7 @@ class Controller(QObject):
         self.click_action = QAction("Click-through", menu, checkable=True)
         self.click_action.setChecked(self.prefs.click_through)
         self.click_action.toggled.connect(self._set_click_through)
-        self.click_action.setEnabled(self.tray is not None)
+        self.click_action.setEnabled(self.tray is not None or QGuiApplication.platformName() == "xcb")
         menu.addAction(self.click_action)
         menu.addSeparator()
         menu.addAction("Copy whole transcript",
@@ -136,11 +138,20 @@ class Controller(QObject):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.session.transcript)))
 
     def _set_click_through(self, on: bool):
+        """From the header's lock button or the tray: saved, and all three kept in step."""
+        self.click_action.blockSignals(True)
+        self.click_action.setChecked(on)
+        self.click_action.blockSignals(False)
         if self.prefs.click_through == on:
             return
         self.prefs.click_through = on
         self.prefs.save(self.store)
         self.window.set_click_through(on)
+
+    def _translation_chosen(self, mode: str, target: str):
+        """Chosen in the transcript's right-click menu: saved like any setting."""
+        self.prefs.translate, self.prefs.translate_to = mode, target
+        self.prefs.save(self.store)
 
     # ── Settings ───────────────────────────────────────────────────────
 
@@ -148,7 +159,13 @@ class Controller(QObject):
         # Show what is in effect: saved settings with this run's flags on top.
         shown = AppSettings(**{**self.prefs.__dict__,
                                "model": self.args.model, "device": self.args.device})
-        dialog = SettingsDialog(shown, self.window, click_through_allowed=self.tray is not None)
+        # No parent: a child dialog would be placed over the transcript window,
+        # at the bottom of the screen. It belongs in the middle.
+        dialog = SettingsDialog(shown, None, click_through_allowed=(
+            self.tray is not None or QGuiApplication.platformName() == "xcb"))
+        dialog.adjustSize()
+        screen = self.window.screen() or QGuiApplication.primaryScreen()
+        dialog.move(screen.availableGeometry().center() - dialog.rect().center())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         new = dialog.result_settings()

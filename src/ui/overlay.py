@@ -23,15 +23,20 @@ It is shown without taking focus, but it can be clicked into — copying needs
 the keyboard. Click-through (from the tray) makes it ignore the mouse entirely.
 """
 
-from PyQt6.QtCore import QRect, QSettings, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    QPoint, QPointF, QRect, QRectF, QSettings, QSize, Qt, QTimer, pyqtSignal,
+)
 from PyQt6.QtGui import (
-    QAction, QColor, QFont, QGuiApplication, QPainter, QTextBlockFormat, QTextCharFormat,
-    QTextCursor, QTextOption,
+    QAction, QActionGroup, QColor, QFont, QGuiApplication, QIcon, QPainter, QPainterPath, QPen,
+    QPixmap, QPolygonF, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextOption,
 )
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QSizeGrip, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QMenu, QSizeGrip, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
+from src.ui.translate import (
+    LANGUAGES, MODES, TranslatePopup, Translator, translate_icon,
+)
 from src.config import (
     OVERLAY_BOTTOM_MARGIN, OVERLAY_FONTS, OVERLAY_HEIGHT_PX, OVERLAY_HISTORY_LINES,
     OVERLAY_MAX_WIDTH_PX, OVERLAY_RAISE_EVERY_MS, OVERLAY_STATUS, OVERLAY_TENTATIVE,
@@ -49,13 +54,24 @@ def _rgba(values) -> str:
 # ── The transcript ─────────────────────────────────────────────────────
 
 class TranscriptView(QTextEdit):
-    """Read-only, selectable, right to left. The live line is always the last paragraph."""
+    """Read-only, selectable, right to left. The live line is always the last paragraph.
+
+    Selected by mouse only, with no caret: a blinking text cursor in a
+    transcript nobody can type into reads as a bug (it did, 2026-09-26).
+    Ctrl+C still copies — Qt handles Copy before it asks about the caret.
+
+    Selected text can go to Google Translate: a button beside the selection,
+    or at once, as the user chose (translation_changed carries a menu choice
+    back to the settings).
+    """
+
+    translation_changed = pyqtSignal(str, str)      # mode, target language
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse
-                                     | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setCursorWidth(0)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setWordWrapMode(QTextOption.WrapMode.WordWrap)
@@ -108,6 +124,23 @@ class TranscriptView(QTextEdit):
         self._follow_later.setSingleShot(True)
         self._follow_later.setInterval(0)
         self._follow_later.timeout.connect(self._scroll_to_bottom)
+
+        self.translate_mode = "button"
+        self.translate_to = "en"
+        self.translator = Translator(self)
+        self.translator.finished.connect(self._translated)
+        self.popup: TranslatePopup | None = None
+        self.translate_button = QToolButton(self.viewport())
+        self.translate_button.setIcon(translate_icon(22))
+        self.translate_button.setIconSize(QSize(22, 22))
+        self.translate_button.setToolTip("Translate the selection with Google Translate")
+        self.translate_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.translate_button.setStyleSheet(
+            "QToolButton { background: rgba(255,255,255,235); border-radius: 7px; padding: 2px; }"
+            "QToolButton:hover { background: white; }")
+        self.translate_button.hide()
+        self.translate_button.clicked.connect(self.translate_selection)
+        self.selectionChanged.connect(self._selection_changed)
 
     # ── Content ────────────────────────────────────────────────────────
 
@@ -187,9 +220,66 @@ class TranscriptView(QTextEdit):
         cur.removeSelectedText()
         self._live_start -= before - doc.characterCount()
 
+    # ── Translation ────────────────────────────────────────────────────
+
+    def selected_text(self) -> str:
+        # Qt separates paragraphs in a selection with U+2029.
+        return self.textCursor().selectedText().replace("\u2029", "\n").strip()
+
+    def set_translation(self, mode: str, target: str):
+        self.translate_mode, self.translate_to = mode, target
+        self._selection_changed()
+
+    def _selection_rect(self):
+        cur = self.textCursor()
+        end = QTextCursor(cur)
+        end.setPosition(cur.selectionEnd())
+        return self.cursorRect(end)
+
+    def _selection_changed(self):
+        if self.translate_mode != "button" or not self.selected_text():
+            self.translate_button.hide()
+            return
+        rect, b = self._selection_rect(), self.translate_button
+        b.adjustSize()
+        x = min(max(0, rect.center().x() - b.width() // 2), self.viewport().width() - b.width())
+        y = rect.top() - b.height() - 2
+        if y < 0:
+            y = min(rect.bottom() + 2, self.viewport().height() - b.height())
+        b.move(x, y)
+        b.show()
+        b.raise_()
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if self.translate_mode == "auto" and self.selected_text():
+            self.translate_selection()
+
+    def translate_selection(self):
+        text = self.selected_text()
+        if not text:
+            return
+        self.translate_button.hide()
+        if self.popup is None:
+            self.popup = TranslatePopup()
+        self.popup.set_waiting(dict(LANGUAGES).get(self.translate_to, self.translate_to))
+        # Above the transcript window, over the selection.
+        window = self.window()
+        x = self.viewport().mapTo(window, self._selection_rect().center()).x()
+        self.popup.show_near(window.mapToGlobal(QPoint(x, 0)), window.width())
+        self.translator.request(text, self.translate_to)
+
+    def _translated(self, _token: int, text: str, error: str):
+        if self.popup is None:
+            return
+        if error:
+            self.popup.set_error(error)
+        else:
+            self.popup.set_result(text, self.translate_to)
+
     # ── Menu ───────────────────────────────────────────────────────────
 
-    def contextMenuEvent(self, event):
+    def build_context_menu(self) -> QMenu:
         menu = self.createStandardContextMenu()     # Copy, Select All
         menu.addSeparator()
         copy_all = QAction("Copy whole transcript", menu)
@@ -198,15 +288,103 @@ class TranscriptView(QTextEdit):
         clear = QAction("Clear window", menu)
         clear.triggered.connect(self.clear_all)
         menu.addAction(clear)
+
+        menu.addSeparator()
+        if self.translate_mode != "off":
+            now = QAction(translate_icon(16), "Translate selection", menu)
+            now.setEnabled(bool(self.selected_text()))
+            now.triggered.connect(self.translate_selection)
+            menu.addAction(now)
+        google = menu.addMenu(translate_icon(16), "Google Translate")
+        modes = QActionGroup(google)
+        for value, label in MODES:
+            a = QAction(label, google, checkable=True)
+            a.setChecked(value == self.translate_mode)
+            a.triggered.connect(lambda _=False, v=value: self._choose(v, self.translate_to))
+            modes.addAction(a)
+            google.addAction(a)
+        into = google.addMenu("Translate into")
+        targets = QActionGroup(into)
+        for code, name in LANGUAGES:
+            a = QAction(name, into, checkable=True)
+            a.setChecked(code == self.translate_to)
+            a.triggered.connect(lambda _=False, c=code: self._choose(self.translate_mode, c))
+            targets.addAction(a)
+            into.addAction(a)
+
         extra = getattr(self.window(), "extra_actions", [])
         if extra:
             menu.addSeparator()
             for action in extra:
                 menu.addAction(action)
-        menu.exec(event.globalPos())
+        return menu
+
+    def _choose(self, mode: str, target: str):
+        self.set_translation(mode, target)
+        self.translation_changed.emit(mode, target)
+
+    def contextMenuEvent(self, event):
+        self.build_context_menu().exec(event.globalPos())
 
 
 # ── The header: status, buttons, and the handle to drag ────────────────
+
+def _glyph(draw, size: int) -> QIcon:
+    """A flat white glyph on a 24-unit grid: dimmed at rest, full white under the mouse.
+
+    Drawn rather than typed: the emoji 🔒 🔓 ⏸ came out in colour, or small,
+    depending on the font the system picked.
+    """
+    icon = QIcon()
+    for s in (size, size * 2):
+        full = QPixmap(s, s)
+        full.fill(Qt.GlobalColor.transparent)
+        p = QPainter(full)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.scale(s / 24, s / 24)
+        draw(p, QColor(255, 255, 255))
+        p.end()
+        dim = QPixmap(s, s)
+        dim.fill(Qt.GlobalColor.transparent)
+        p = QPainter(dim)
+        p.setOpacity(190 / 255)
+        p.drawPixmap(0, 0, full)
+        p.end()
+        icon.addPixmap(dim, QIcon.Mode.Normal)
+        icon.addPixmap(full, QIcon.Mode.Active)
+    return icon
+
+
+def _lock(closed: bool):
+    def draw(p: QPainter, color: QColor):
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawRoundedRect(QRectF(5, 10.5, 14, 10.5), 2, 2)
+        shackle = QPainterPath(QPointF(8, 11))
+        shackle.lineTo(8, 7)
+        shackle.arcTo(QRectF(8, 3, 8, 8), 180, -180)
+        if closed:
+            shackle.lineTo(16, 11)
+        p.setPen(QPen(color, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                      Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(shackle)
+    return draw
+
+
+def _pause(p: QPainter, color: QColor):
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawRoundedRect(QRectF(6, 4.5, 4.5, 15), 1.2, 1.2)
+    p.drawRoundedRect(QRectF(13.5, 4.5, 4.5, 15), 1.2, 1.2)
+
+
+def _play(p: QPainter, color: QColor):
+    p.setPen(QPen(color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                  Qt.PenJoinStyle.RoundJoin))
+    p.setBrush(color)
+    p.drawPolygon(QPolygonF([QPointF(8, 5), QPointF(8, 19), QPointF(19, 12)]))
+
 
 class Header(QWidget):
     def __init__(self, window: "TranscriptWindow"):
@@ -218,12 +396,34 @@ class Header(QWidget):
         self.status = QLabel("")
         self.status.setStyleSheet(f"color: {_rgba(OVERLAY_STATUS)}; font-size: 12px;")
         layout.addWidget(self.status, 1)
-        self.pause_button = self._button("⏸", "Pause / resume listening")
+        self._icons = {
+            "locked": _glyph(_lock(True), 18), "unlocked": _glyph(_lock(False), 18),
+            "pause": _glyph(_pause, 22), "play": _glyph(_play, 22),
+        }
+        self.lock_button = self._button("", "")
+        self.lock_button.setIconSize(QSize(18, 18))
+        self.lock_button.setCheckable(True)
+        self.set_locked(False)
+        self.pause_button = self._button("", "Pause / resume listening")
+        self.pause_button.setIconSize(QSize(22, 22))
+        self.set_paused(False)
         self.settings_button = self._button("⚙", "Settings")
         self.quit_button = self._button("✕", "Quit LiveTranscribe")
-        for button in (self.pause_button, self.settings_button, self.quit_button):
+        for button in (self.lock_button, self.pause_button, self.settings_button, self.quit_button):
             layout.addWidget(button)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
+
+    def set_locked(self, on: bool):
+        self.lock_button.setChecked(on)
+        self.lock_button.setIcon(self._icons["locked" if on else "unlocked"])
+        self.lock_button.setToolTip(
+            "Click-through is on: the transcript lets clicks pass to the window under it. "
+            "Click to turn it off." if on else
+            "Click-through: let clicks on the transcript pass to the window under it "
+            "(this header stays clickable)")
+
+    def set_paused(self, paused: bool):
+        self.pause_button.setIcon(self._icons["play" if paused else "pause"])
 
     def _button(self, text: str, tip: str) -> QToolButton:
         b = QToolButton(self)
@@ -253,6 +453,7 @@ class Header(QWidget):
 
 class TranscriptWindow(QWidget):
     pause_clicked = pyqtSignal()
+    click_through_toggled = pyqtSignal(bool)
     settings_clicked = pyqtSignal()
     quit_clicked = pyqtSignal()
 
@@ -261,6 +462,8 @@ class TranscriptWindow(QWidget):
         self._store = store
         self._bypass_wm = bypass_wm
         self._click_through = False
+        # Where X11 is underneath, click-through can spare the header.
+        self._shape_input = QGuiApplication.platformName() == "xcb"
         self._opacity = 75
         self._drag_offset = None
         self.extra_actions: list[QAction] = []
@@ -281,6 +484,8 @@ class TranscriptWindow(QWidget):
         self.grip.setFixedSize(14, 14)
         self.grip.setStyleSheet("background: transparent;")
 
+        self.header.lock_button.clicked.connect(
+            lambda: self.click_through_toggled.emit(not self._click_through))
         self.header.pause_button.clicked.connect(self.pause_clicked)
         self.header.settings_button.clicked.connect(self.settings_clicked)
         self.header.quit_button.clicked.connect(self.quit_clicked)
@@ -306,7 +511,7 @@ class TranscriptWindow(QWidget):
     def set_status(self, text: str, paused: bool | None = None):
         self.header.status.setText(text)
         if paused is not None:
-            self.header.pause_button.setText("▶" if paused else "⏸")
+            self.header.set_paused(paused)
 
     def add_note(self, text: str):
         self.view.add_note(text)
@@ -321,6 +526,7 @@ class TranscriptWindow(QWidget):
         self._opacity = prefs.opacity
         if self.view.show_tentative != prefs.show_tentative:
             self.view.set_show_tentative(prefs.show_tentative)
+        self.view.set_translation(prefs.translate, prefs.translate_to)
         if self._click_through != prefs.click_through:
             self.set_click_through(prefs.click_through)
         self.update()
@@ -332,6 +538,7 @@ class TranscriptWindow(QWidget):
                 # The window manager acts on the request only once the window
                 # is mapped, which happens after show() returns.
                 QTimer.singleShot(300, self._make_sticky)
+            QTimer.singleShot(300, self._apply_input_region)
         self.raise_()
 
     @property
@@ -339,13 +546,37 @@ class TranscriptWindow(QWidget):
         return self._click_through
 
     def set_click_through(self, on: bool):
+        """The transcript lets clicks through; the header never does.
+
+        Under X11 (XWayland — how the app runs on GNOME) the window's input
+        region is set to the header alone. Elsewhere Qt's all-or-nothing flag
+        is the only way, and the tray menu is the way back.
+        """
         self._click_through = on
+        self.header.set_locked(on)
+        if self._shape_input:
+            self._apply_input_region()
+            return
         visible = self.isVisible()
         geometry = self.geometry()
         self._apply_flags()             # changing flags unmaps the window
         self.setGeometry(geometry)
         if visible:
             self.show_window()
+
+    def _input_rects(self) -> list[tuple[int, int, int, int]] | None:
+        """What takes the mouse: all of the window, or in click-through only the header."""
+        if not self._click_through:
+            return None
+        ratio = self.devicePixelRatioF()
+        h = self.header.geometry().adjusted(-4, -6, 4, 2)   # a little margin to grab it by
+        return [(int(h.x() * ratio), int(h.y() * ratio),
+                 int(h.width() * ratio), int(h.height() * ratio))]
+
+    def _apply_input_region(self):
+        if self._shape_input and self.isVisible():
+            from src.ui.x11 import set_input_region
+            set_input_region(int(self.winId()), self._input_rects())
 
     def reset_position(self):
         self._store.remove("window/geometry")
@@ -361,7 +592,7 @@ class TranscriptWindow(QWidget):
             # Override-redirect: no window manager at all — above fullscreen
             # windows and on every workspace, moved only by the app itself.
             flags |= Qt.WindowType.X11BypassWindowManagerHint
-        if self._click_through:
+        if self._click_through and not self._shape_input:
             flags |= Qt.WindowType.WindowTransparentForInput
         self.setWindowFlags(flags)
 
@@ -412,6 +643,7 @@ class TranscriptWindow(QWidget):
 
     def resizeEvent(self, _event):
         self.grip.move(self.width() - self.grip.width() - 2, self.height() - self.grip.height() - 2)
+        self._apply_input_region()      # the header's width follows the window's
         if self.isVisible():
             self._save_geometry_later.start()
 
