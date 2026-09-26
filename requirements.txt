@@ -1,0 +1,27 @@
+# LiveTranscribe — step 1 (terminal transcription)
+#
+#   conda create -n livetranscribe python=3.12 && conda activate livetranscribe
+#   pip install -r requirements.txt
+#
+# Also needed, from the system: PipeWire's pw-record and pw-metadata
+# (pipewire-bin), and the Whisper model in the Hugging Face cache
+# (Systran/faster-whisper-small). The app never downloads anything.
+
+# ── Speech recognition ─────────────────────────────────────────────────
+faster-whisper>=1.2.1         # Whisper inference, and the Silero VAD model it bundles
+ctranslate2>=4.7.1            # the engine faster-whisper runs on
+onnxruntime>=1.25.0           # runs Silero VAD
+
+# ── Audio ──────────────────────────────────────────────────────────────
+numpy>=1.26.0,<2              # ctranslate2 expects the numpy 1.x ABI (hifz)
+av>=17.0.1                    # decodes --file input and replay clips
+soundfile>=0.13.1             # --record writes FLAC
+
+# ── Tests ──────────────────────────────────────────────────────────────
+pytest>=9.0.0
+
+# ── GPU (~1.4 GB) ──────────────────────────────────────────────────────
+# src/core/device.py finds and loads these itself; without them, or without
+# a working driver (`nvidia-smi`), the app runs on CPU.
+nvidia-cublas-cu12>=12.9.2
+nvidia-cudnn-cu12>=9.26.0

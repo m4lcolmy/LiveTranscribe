@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runs: session logs, transcripts, recorded sessions
+logs/
+
+# Test audio is not committed; manifests are.
+tests/clips/**/*.flac
+tests/clips/**/*.wav
+tests/clips/**/*.mp3
+tests/clips/**/*.mp4
+tests/clips/**/*.m4a
+tests/clips/**/*.webm
+tests/clips/**/*.opus
