@@ -24,14 +24,17 @@ pw-record (speaker monitor) → AutoGain → Silero VAD → Streamer ⇄ Whisper
   is final when two passes agree on it; one word spelled differently each time
   does not hold up the rest. When the speaker pauses (0.7 s) a closing pass
   hears the whole utterance and the line ends. Past 8 s the buffer is cut at a
-  pause (Whisper stops after the first sentence of a longer buffer).
+  pause (Whisper stops after the first sentence of a longer buffer). A pass
+  that stops short of the last one leaves the grey words after its end on
+  screen instead of erasing them.
 - **Language** — once the buffer holds 6 s, Whisper's language detection is
   asked; two "not Arabic" verdicts in a row drop the speech (shorter audio
   misjudges Arabic too often to act on).
 - **Gates** (`engine.py`) — segments that loop, have very low confidence, or
   are one of Whisper's invented lines (`اشتركوا في القناة`, `ترجمة نانسي قنقر`…)
-  are dropped; a looping segment keeps the words before the loop; a pass may
-  generate at most 15 tokens per second of audio.
+  are dropped; a loop keeps the words before it, also when it runs across
+  segments; each segment is judged on its own text, not on the decode window
+  it came in. A pass may generate at most 15 tokens per second of audio.
 
 Every constant is in `src/config.py`, with the measurement behind its value.
 The look — colours, radii, stylesheets — is in `src/ui/theme.py`: greyscale

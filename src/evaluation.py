@@ -14,6 +14,8 @@ wrong thing (hifz's lesson):
     FLICKER     tentative words shown and then not confirmed by the next pass —
                 hifz's "retracted reds": invisible in the final text, obvious to
                 anyone watching.
+    VANISHED    the part of FLICKER that left nothing in its place: words that
+                appeared and were gone on the next pass.
     REAL-TIME   pass latency against the step.
 """
 
@@ -220,6 +222,26 @@ class SessionRecord:
                     count += 1
         return count
 
+    def vanished(self) -> int:
+        """Tentative words after which the next pass showed nothing at their time.
+
+        Flicker counts every guess the next pass changed; this counts only the
+        ones that went without a replacement — words that appear and then vanish,
+        the way someone watching fast speech described it (2026-09-27).
+        """
+        count, committed_end, prev = 0, 0.0, None
+        for _, u in self.shown:
+            for w in [w for line in u.finished for w in line.words] + list(u.line_words):
+                committed_end = max(committed_end, w.end)
+            if u.report is None:
+                prev = u
+                continue
+            if prev is not None and not u.report.final:
+                shown_until = max([committed_end] + [w.end for w in u.tentative_words])
+                count += sum(1 for w in prev.tentative_words if w.start >= shown_until - 0.05)
+            prev = u
+        return count
+
     def pass_latencies(self) -> list[float]:
         return [u.report.latency_s for _, u in self.shown if u.report is not None]
 
@@ -232,6 +254,7 @@ class SessionRecord:
             "shown_p50": _pct(first, 0.5), "shown_p90": _pct(first, 0.9),
             "commit_p50": _pct(committed, 0.5), "commit_p90": _pct(committed, 0.9),
             "flicker_per_min": self.flicker() / minutes,
+            "vanished_per_min": self.vanished() / minutes,
             "passes": len(lat),
             "pass_p50": _pct(lat, 0.5), "pass_p90": _pct(lat, 0.9),
             "overran": sum(1 for x in lat if x > self.step_s),

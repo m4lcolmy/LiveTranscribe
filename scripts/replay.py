@@ -160,7 +160,7 @@ def summarize(results: list[dict]):
 
     print("\n══ corpus " + "═" * 70)
     print(f"  {'type·reference':<24}{'clips':>6}{'words':>7}{'COVER':>8}{'CER':>7}{'WER':>7}"
-          f"{'offCER':>8}{'GAP':>7}{'shown p90':>11}{'final p90':>11}{'flick/min':>10}")
+          f"{'offCER':>8}{'GAP':>7}{'shown p90':>11}{'final p90':>11}{'flick/min':>10}{'vanish/min':>11}")
     for name, rs in groups.items():
         off = (f"{weighted(rs, 'offline_cer', 'ref_chars'):>7.1%}"
                f"{(weighted(rs, 'cer', 'ref_chars') - weighted(rs, 'offline_cer', 'ref_chars')) * 100:>+6.1f}"
@@ -170,7 +170,8 @@ def summarize(results: list[dict]):
               f"{weighted(rs, 'wer', 'ref_words'):>7.1%} {off}"
               f"{np.nanmean([r['shown_p90'] for r in rs]):>10.2f}s"
               f"{np.nanmean([r['commit_p90'] for r in rs]):>10.2f}s"
-              f"{np.mean([r['flicker_per_min'] for r in rs]):>10.1f}")
+              f"{np.mean([r['flicker_per_min'] for r in rs]):>10.1f}"
+              f"{np.mean([r['vanished_per_min'] for r in rs]):>11.1f}")
     silent = [r for r in results if "stayed_silent" in r]
     if silent:
         ok = sum(r["stayed_silent"] for r in silent)
@@ -198,7 +199,7 @@ def report(r: dict):
         lines.append(f"  STAYED SILENT {'yes' if r['stayed_silent'] else 'NO — ' + str(r['words']) + ' words'}")
     lines.append(f"  LATENCY shown p50 {s(r['shown_p50'])} p90 {s(r['shown_p90'])}   "
                  f"committed p50 {s(r['commit_p50'])} p90 {s(r['commit_p90'])}")
-    lines.append(f"  FLICKER {r['flicker_per_min']:.1f}/min   "
+    lines.append(f"  FLICKER {r['flicker_per_min']:.1f}/min (vanished {r['vanished_per_min']:.1f})   "
                  f"REAL-TIME passes {r['passes']}  p50 {ms(r['pass_p50'])} p90 {ms(r['pass_p90'])}"
                  f"  overran step {r['overran']}")
     print("\n".join(lines))

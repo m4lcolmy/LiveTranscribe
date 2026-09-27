@@ -8,7 +8,9 @@ subclassing `Engine`; swapping the default means a benchmark run first
 reading code").
 """
 
+import itertools
 import time
+import zlib
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -99,15 +101,74 @@ def cut_loop(words: list[Word], copies: int = LOOP_COPIES, longest: int = 8) -> 
     return None
 
 
-def rejection(seg) -> tuple[str, str] | None:
-    """(reason, detail) when a segment should be dropped, else None."""
-    if seg.compression_ratio > ASR_MAX_COMPRESSION_RATIO:
-        return "repetitive", f"cr={seg.compression_ratio:.2f}"
-    if seg.avg_logprob < ASR_MIN_AVG_LOGPROB:
-        return "low_logprob", f"lp={seg.avg_logprob:.2f}"
-    if is_phantom(seg.text):
-        return "phantom", f"nsp={seg.no_speech_prob:.2f}"
+def compression_ratio(text: str) -> float:
+    """gzip ratio of the text's UTF-8 bytes — faster-whisper's own measure of repetition."""
+    data = text.encode("utf-8")
+    return len(data) / max(1, len(zlib.compress(data)))
+
+
+def rejection(text: str, avg_logprob: float, no_speech_prob: float) -> tuple[str, str] | None:
+    """(reason, detail) when a segment with this text should be dropped, else None.
+
+    The compression ratio is the segment's own. faster-whisper reports one per
+    decode window, shared by every segment in it: one looping segment there
+    used to take the window's correct sentences down with it. avg_logprob is
+    the window's too, and stays so — it is Whisper's own verdict on the decode.
+    """
+    cr = compression_ratio(text)
+    if cr > ASR_MAX_COMPRESSION_RATIO:
+        return "repetitive", f"cr={cr:.2f}"
+    if avg_logprob < ASR_MIN_AVG_LOGPROB:
+        return "low_logprob", f"lp={avg_logprob:.2f}"
+    if is_phantom(text):
+        return "phantom", f"nsp={no_speech_prob:.2f}"
     return None
+
+
+def _words(seg) -> list[Word]:
+    return [Word(w.word.strip(), float(w.start), float(w.end), float(w.probability))
+            for w in (seg.words or []) if w.word.strip()]
+
+
+def gate_window(window: list, result: Transcription):
+    """The segments of one decode window that pass the gates, into `result`.
+
+    A loop often comes as separate segments — "ايه صحيح" thirteen times, one
+    segment each — so no single segment repeats itself and the loop has to be
+    found across the window: when the window's text is repetitive, everything
+    from the loop's second copy on is cut. Then each segment is judged on its
+    own text; a segment that loops inside itself keeps the words before the loop.
+    """
+    words_per = [_words(seg) for seg in window]
+    if window and window[0].compression_ratio > ASR_MAX_COMPRESSION_RATIO:
+        flat = [w for words in words_per for w in words]
+        kept = cut_loop(flat)
+        if kept is not None:
+            result.dropped.append(("loop_cut", f"cr={window[0].compression_ratio:.2f} "
+                                               f"kept {len(kept)}/{len(flat)}",
+                                   " ".join(seg.text.strip() for seg in window)))
+            left, cut = len(kept), []
+            for words in words_per:
+                cut.append(words[:left])
+                left -= len(cut[-1])
+            words_per = cut
+
+    for seg, words in zip(window, words_per):
+        if not words:
+            continue
+        text = " ".join(w.text for w in words)
+        reason = rejection(text, seg.avg_logprob, seg.no_speech_prob)
+        if reason is not None and reason[0] == "repetitive":
+            kept = cut_loop(words)
+            if kept:
+                result.dropped.append(("loop_cut", f"{reason[1]} kept {len(kept)}/{len(words)}", text))
+                words, text = kept, " ".join(w.text for w in kept)
+                reason = ("phantom", "after loop cut") if is_phantom(text) else None
+        if reason is not None:
+            result.dropped.append((reason[0], reason[1], text))
+            continue
+        result.words.extend(words)
+        result.segments.append(Segment(words[0].start, words[-1].end, text))
 
 
 # ── Whisper ────────────────────────────────────────────────────────────
@@ -193,28 +254,10 @@ class WhisperEngine(Engine):
             **self.options,
         )
         result = Transcription()
-        for seg in segments:               # decoding happens while iterating
-            words = [
-                Word(w.word.strip(), float(w.start), float(w.end), float(w.probability))
-                for w in (seg.words or []) if w.word.strip()
-            ]
-            reason = rejection(seg)
-            if reason is not None and reason[0] == "repetitive":
-                kept = cut_loop(words)
-                if kept:
-                    result.dropped.append(("loop_cut", f"{reason[1]} kept {len(kept)}/{len(words)}",
-                                           seg.text.strip()))
-                    words = kept
-                    reason = (("phantom", "after loop cut")
-                              if is_phantom(" ".join(w.text for w in kept)) else None)
-            if reason is not None:
-                result.dropped.append((reason[0], reason[1], seg.text.strip()))
-                continue
-            if not words:
-                continue
-            result.words.extend(words)
-            result.segments.append(Segment(words[0].start, words[-1].end,
-                                           " ".join(w.text for w in words)))
+        # Decoding happens while iterating. Segments of one decode window share
+        # its `seek`, and its compression ratio and avg_logprob.
+        for _seek, window in itertools.groupby(segments, key=lambda seg: seg.seek):
+            gate_window(list(window), result)
         result.latency_s = time.monotonic() - t0
         return result
 
@@ -235,7 +278,7 @@ class WhisperEngine(Engine):
         )
         result = Transcription()
         for seg in segments:
-            reason = rejection(seg)
+            reason = rejection(seg.text.strip(), seg.avg_logprob, seg.no_speech_prob)
             if reason is not None:
                 result.dropped.append((reason[0], reason[1], seg.text.strip()))
                 continue

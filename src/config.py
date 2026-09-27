@@ -188,7 +188,15 @@ ASR_BEAM_SIZE = 5
 # can see what each gate costs.
 ASR_NO_SPEECH_THRESHOLD = 0.6
 ASR_MIN_AVG_LOGPROB = -1.0
+# Judged on each segment's own text (engine.rejection): faster-whisper gives
+# every segment of a decode window the window's ratio, and one looping
+# segment then dropped the window's correct sentences with it. Real Arabic
+# stays far below: median 1.9 over 40 words of every corpus reference.
 ASR_MAX_COMPRESSION_RATIO = 2.4
+# Decoding stays plain: no repetition penalty, no n-gram block, no temperature
+# fallback. Each stops the loops Whisper small falls into on fast Gulf speech
+# ("ايه" sixty times), and each costs standard Arabic or stability more than
+# it gains — measured 2026-09-27, MEASUREMENTS.md.
 
 # How many tokens one pass may generate, per second of buffer. When Whisper
 # loops — "يدخله نارا خالدا فيها" over and over — it decodes until the model's

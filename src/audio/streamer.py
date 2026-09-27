@@ -16,7 +16,8 @@ agree on it — the common prefix of the previous hypothesis and this one
 (LocalAgreement-2, Macháček et al., whisper_streaming), made tolerant of one
 short disagreement so a single unstable word cannot hold back the sentence
 after it (see AGREE_MAX_GAP). Words after the agreed part are tentative:
-shown, but free to change on the next pass.
+shown, but free to change on the next pass. A pass that stops short of the
+last one changes only what it heard: guesses past its end stay shown.
 
 **When a line ends.** When the speaker stops (END_SILENCE_S of trailing
 silence), one closing pass hears the whole utterance, every word is committed,
@@ -275,7 +276,16 @@ class Streamer:
 
         new = self._fresh(words)
         n = agreed_prefix(self._tentative, new)
-        stable, self._tentative = new[:n], new[n:]
+        stable = new[:n]
+        # A pass can stop short of the buffer's end — Whisper ends the decode
+        # early, or a loop is cut. It did not hear the words after that point;
+        # it did not un-hear them either. The last pass's guesses there stay on
+        # screen, still tentative, until a pass reaches them. Erasing them is
+        # what made words appear and vanish on fast speech (2026-09-27).
+        heard_until = max((w.end for w in words), default=buffer_start)
+        unreached = [w for w in self._tentative if w.start >= heard_until - self.commit_tolerance_s]
+        self.stats["unreached_kept"] += len(unreached)
+        self._tentative = new[n:] + unreached
         finished = self._commit(stable)
         finished += self._trim()
 

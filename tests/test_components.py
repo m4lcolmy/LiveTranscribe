@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from src.audio.engine import is_phantom, rejection
+from src.audio.engine import Transcription, compression_ratio, gate_window, is_phantom, rejection
 from src.audio.gain import AutoGain
 from src.core.arabic import compare_key, normalize
 
@@ -142,17 +142,73 @@ def test_real_speech_is_not_a_phantom(text):
     assert not is_phantom(text)
 
 
-def seg(text="نص", cr=1.2, lp=-0.3, nsp=0.1):
-    return SimpleNamespace(text=text, compression_ratio=cr, avg_logprob=lp, no_speech_prob=nsp)
+SPEECH = "قال رئيس الوزراء في مؤتمر صحفي إن الحكومة ستعلن القرار عام ألفين وستة وعشرين"
 
 
 def test_gates():
-    assert rejection(seg()) is None
-    assert rejection(seg(cr=3.1))[0] == "repetitive"
-    assert rejection(seg(lp=-1.4))[0] == "low_logprob"
-    assert rejection(seg(text="ترجمة نانسي قنقر"))[0] == "phantom"
+    assert rejection(SPEECH, -0.3, 0.1) is None
+    assert rejection("كتبك " * 20, -0.3, 0.1)[0] == "repetitive"
+    assert rejection(SPEECH, -1.4, 0.1)[0] == "low_logprob"
+    assert rejection("ترجمة نانسي قنقر", -0.3, 0.1)[0] == "phantom"
     # High no_speech_prob alone is not a reason: speech over music scores high.
-    assert rejection(seg(nsp=0.9)) is None
+    assert rejection(SPEECH, -0.3, 0.9) is None
+
+
+def test_real_arabic_is_far_from_the_repetition_limit():
+    # 36 words of news reading: a whole 8 s buffer of fast speech.
+    long_speech = ("قال رئيس الوزراء في مؤتمر صحفي عقده اليوم في العاصمة إن الحكومة ستعلن خلال "
+                   "الأسبوع المقبل عن حزمة من القرارات الاقتصادية التي تهدف إلى خفض الأسعار "
+                   "ودعم الأسر ذات الدخل المحدود وتشجيع الاستثمار في القطاعات الإنتاجية")
+    assert compression_ratio(long_speech) < 2.4 < compression_ratio("ايه " * 30)
+
+
+def window(*texts, cr=1.2, lp=-0.3, nsp=0.1):
+    """One decode window as faster-whisper yields it: every segment carries the window's scores."""
+    segs, t = [], 0.0
+    for text in texts:
+        words = []
+        for token in text.split():
+            words.append(SimpleNamespace(word=" " + token, start=t, end=t + 0.3, probability=0.9))
+            t += 0.4
+        segs.append(SimpleNamespace(text=" " + text, words=words, seek=0, compression_ratio=cr,
+                                    avg_logprob=lp, no_speech_prob=nsp))
+    return segs
+
+
+def gated(segs):
+    result = Transcription()
+    gate_window(segs, result)
+    return " ".join(w.text for w in result.words), result.dropped
+
+
+def test_one_looping_segment_does_not_take_the_windows_sentences_with_it():
+    # Replayed 2026-09-27 (al-Sanani): a window scored 3.75 because one of its
+    # segments looped; its other sentences were right and were dropped with it.
+    text, dropped = gated(window("اللي ما يهاجر اللي بلادن فيها كفر", "وين يروح المناطق",
+                                 "انا " * 12, cr=3.75))
+    assert text == "اللي ما يهاجر اللي بلادن فيها كفر وين يروح المناطق انا"
+    assert dropped[0][0] == "loop_cut"
+
+
+def test_a_loop_spread_over_segments_is_cut_to_one_copy():
+    # "ايه صحيح" thirteen times, one segment each: no segment repeats itself.
+    text, _ = gated(window("وين هي المناطق", *["ايه صحيح"] * 13, cr=7.38))
+    assert text == "وين هي المناطق ايه صحيح"
+
+
+def test_a_repetitive_window_without_a_loop_keeps_everything():
+    # Live 2026-09-27: fast speech with its own repeats scored 2.50 as a window,
+    # with no loop in it, and all of its segments were dropped.
+    segs = window("اللي ما يهاجر اللي بلادن فيها كفر", "ايه صحيح", "وين يروح",
+                  "المناطق اللي يسيطر عليهم جاهدون", cr=2.50)
+    text, dropped = gated(segs)
+    assert text.split() == " ".join(s.text for s in segs).split()
+    assert dropped == []
+
+
+def test_a_low_confidence_window_is_still_dropped_whole():
+    text, dropped = gated(window("كلام غير واضح", "ابدا", lp=-1.3))
+    assert text == "" and [d[0] for d in dropped] == ["low_logprob", "low_logprob"]
 
 
 # ── Loops and the token budget ─────────────────────────────────────────
@@ -233,3 +289,21 @@ def test_a_window_takes_only_whole_cues_and_reports_their_span(tmp_path):
 
 def test_digits_score_the_same_in_either_script():
     assert score_text("ستعلن القرار عام 2026", "ستعلن القرار عام ٢٠٢٦").cer == 0.0
+
+
+# ── Session log ────────────────────────────────────────────────────────
+
+def test_a_new_session_log_counts_only_its_own_session(tmp_path):
+    # A settings change reloads the model and opens a new log in the same
+    # process; its summary once repeated the last session's drops.
+    from src.core.debug import SessionLog
+
+    log = SessionLog()
+    log.open(tmp_path / "first.log")
+    log.count("drop_repetitive", 63)
+    log.pass_latencies.append(0.4)
+    log.close()
+    log.open(tmp_path / "second.log")
+    assert "repetitive=0" in log.summary(1.0)
+    assert "passes 0" in log.summary(1.0)
+    log.close()

@@ -205,6 +205,40 @@ def test_silence_closes_the_line_with_every_word_once():
     assert updates[-1].report is not None and updates[-1].report.final
 
 
+class StopsShort(ScriptedEngine):
+    """Whisper ending a decode early (or a loop cut, or every segment gated):
+    on the given passes, nothing after `keep_s` seconds into the buffer."""
+
+    def __init__(self, script, short_passes, keep_s):
+        super().__init__(script)
+        self.short_passes = short_passes
+        self.keep_s = keep_s
+
+    def transcribe(self, audio, prompt=None):
+        result = super().transcribe(audio, prompt)
+        if len(self.calls) in self.short_passes:
+            result.words = [w for w in result.words if w.end <= self.keep_s]
+            result.segments = [s for s in result.segments if s.end <= self.keep_s]
+        return result
+
+
+@pytest.mark.parametrize("keep_s", [0.0, 0.5])
+def test_a_pass_that_stops_short_leaves_the_words_after_it_on_screen(keep_s):
+    # Measured on fast speech (2026-09-27): grey words shown, then gone on the
+    # next pass, then back on the one after — the pass had simply stopped early.
+    words = script(10)
+    s = Streamer(StopsShort(words, short_passes={3}, keep_s=keep_s), FakeVad([(0, 6.0)]))
+    updates = run(s, 3.0)
+    before = updates[-1].tentative
+    assert before == "w5 w6 w7~"
+    short = run(s, 4.0)[-1]
+    assert short.tentative == before and short.committed == updates[-1].committed
+    after = run(s, 5.0)[-1]
+    assert after.committed.endswith("w5 w6")                 # the next full pass agrees with them
+    updates += [short, after] + run(s, 8.0)
+    assert committed_words(updates) == [w.text for w in words]
+
+
 def test_finish_closes_speech_still_going_at_the_end_of_the_stream():
     words = script(10)
     s = Streamer(ScriptedEngine(words), FakeVad([(0, 4.0)]))

@@ -47,6 +47,10 @@ class SessionLog:
         self._path = Path(path)
         self._fh = open(self._path, "w", encoding="utf-8", buffering=1)
         self._t0 = time.monotonic()
+        # A settings change reloads the model and opens a new log in the same
+        # process; its summary must count only its own session.
+        self.counters = Counter()
+        self.pass_latencies = []
         self._raw(f"# LiveTranscribe session log — {time.strftime('%Y-%m-%d %H:%M:%S')}")
         if header:
             for line in header.splitlines():

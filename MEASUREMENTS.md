@@ -3,6 +3,76 @@
 What the benchmarks found, and what each finding changed. Newest first.
 Machine: Ryzen 7 6800H (8 cores), RTX 3050 Ti Mobile 4 GB (driver 595.91).
 
+## 2026-09-27 — fast speech: words shown, then gone
+
+Reported live: on fast-speaking men the text appears and is cancelled at
+once. Reproduced on five Walid al-Sanani interviews (MBC 8PM: P6R9mScKKIU,
+XGxj-xdetV4, xGupNxS7Q3Y, 72tu9SFIz1w, FKTUsZ6dk_A, 3.5-4 min each) — fast
+Najdi dialect, full of "ايه ايه ايه". They have no human captions; the
+references are CaptionForge's Whisper large-v3 transcripts, so CER here is
+agreement with a bigger model, not accuracy.
+
+A new number for it, VANISHED (`evaluation.py`): tentative words after which
+the next pass shows nothing at their time — not changed, gone. Baseline:
+20 words/min on these clips (8-33 per clip), 2 on the news corpus.
+
+### Three causes
+
+From the live session logs and a per-pass trace of every vanished word:
+
+1. **A decode-level number judged per segment.** faster-whisper gives every
+   segment of a decode window the window's `compression_ratio`. One looping
+   segment — or just a long run of fast speech with its own repeats — put
+   the window over 2.4, and every segment in it was dropped, correct ones
+   too. Live: a window of five right sentences scored 2.50 and all five
+   went; the grey text on screen became one word, then nothing.
+2. **Loops across segments.** Whisper small loops on the repeated
+   interjections ("ايه" ×60, "بلا" ×80, "ايه صحيح" ×13) until the token
+   budget runs out. When the loop comes one copy per segment, no segment
+   repeats itself, and `cut_loop` never saw it.
+3. **A pass that stopped short erased what it did not reach.** Whisper
+   ending a decode early, a cut loop, a dropped window: the words the last
+   pass showed after that point were cleared, and came back a pass later.
+
+### What changed
+
+Each segment is judged on its own text; a loop is found across a window's
+segments and cut to one copy; tentative words past the end of what a pass
+heard stay on screen until a pass reaches them (`streamer.py`). Fixed clock,
+Whisper small, GPU:
+
+```
+                           al-Sanani (5 clips)            news corpus (12 clips)
+                       coverage   CER   vanished/min   coverage   CER   vanished/min
+before                   87.9%   30.9%      20.0         94.6%   16.9%      2.1
+after                    88.8%   31.1%       1.5         94.7%   17.2%      0.2
+```
+
+Per clip, vanished/min 8.2 / 33.1 / 29.1 / 23.2 / 6.5 → 0.0 / 1.9 / 0.4 /
+1.6 / 3.8. On the corpus 11 of 12 clips give the same text as before (one
+TEDx clip, 85.8 → 85.6% coverage); the DW clip with the human reference goes
+92.2% / 19.5% → 92.9% / 22.9% — the clip whose numbers swing with timing
+alone (above). Both controls unchanged: music silent, English 48 words.
+
+### Tried, and not kept
+
+The loops themselves. All three cures stop them; each costs more elsewhere
+(al-Sanani clips, on top of the change above):
+
+```
+decoding                          coverage   CER    vanished   against it
+repetition penalty 1.1 always       92.3%   27.5%     0.3      corpus: DW CER 19.5 → 27.7%, Sky News 10.8 → 14.3%
+  ...only to retry a looped pass    92.6%   28.4%     0.0      DW 92.2% / 19.5% → 85.3% / 27.0%; English control
+                                                               48 → 135 words; the retry often loops too, so a
+                                                               looping pass costs two runaway decodes
+no_repeat_ngram_size 10 / 16      88.4 / 88.2%  32.1 / 33.0%   one clip down to 66.3% / 79.7% coverage
+temperature fallback 0-0.6          91.1%   27.4%     0.3      one clip: final p90 24 s, flicker 294/min —
+                                                               sampled re-decodes stop two passes agreeing
+```
+
+Still open: the loops on fast Gulf speech, and flicker — words changed, not
+vanished — at 110-180/min on these clips against ~40 on news.
+
 ## 2026-09-26 — the accuracy corpus (step 1B)
 
 ### What the references are
