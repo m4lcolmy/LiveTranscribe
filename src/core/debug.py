@@ -34,6 +34,7 @@ class SessionLog:
         self._lock = threading.Lock()
         self.counters: Counter = Counter()
         self.pass_latencies: list[float] = []
+        self.result_lags: list[float] = []      # Deepgram: final words behind the stream
 
     @property
     def enabled(self) -> bool:
@@ -51,6 +52,7 @@ class SessionLog:
         # process; its summary must count only its own session.
         self.counters = Counter()
         self.pass_latencies = []
+        self.result_lags = []
         self._raw(f"# LiveTranscribe session log — {time.strftime('%Y-%m-%d %H:%M:%S')}")
         if header:
             for line in header.splitlines():
@@ -98,6 +100,12 @@ class SessionLog:
                 f"max={lat[-1] * 1000:.0f}ms  step={step_s * 1000:.0f}ms  "
                 f"overran={late} ({100 * late / len(lat):.0f}%)"
             )
+        elif self.result_lags:
+            lag = sorted(self.result_lags)
+            p50 = lag[len(lag) // 2]
+            p90 = lag[min(len(lag) - 1, int(len(lag) * 0.9))]
+            lines.append(f"deepgram finals {len(lag)}  behind the stream p50={p50 * 1000:.0f}ms "
+                         f"p90={p90 * 1000:.0f}ms max={lag[-1] * 1000:.0f}ms")
         else:
             lines.append("passes 0 — no speech reached the model")
         c = self.counters
@@ -107,6 +115,8 @@ class SessionLog:
             f"repetitive={c['drop_repetitive']} loops cut={c['drop_loop_cut']}  "
             f"short blips={c['blips']}"
         )
+        if c["deepgram_reconnects"]:
+            lines.append(f"deepgram connections lost {c['deepgram_reconnects']}")
         if c["capture_restarts"]:
             lines.append(f"capture restarts {c['capture_restarts']}")
         for line in lines:

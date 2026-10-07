@@ -149,8 +149,12 @@ class Pipeline:
 
     def _status(self):
         s = self.streamer
-        speaking = s.vad.probability(s.fed - 8000, s.fed) >= s.vad.threshold
-        text = (f"● listening — level {_db(self.gain.peak)}, gain {self.gain.gain:.1f}×"
-                f"{', speech…' if speaking else ''}")
+        problem = getattr(s, "problem", None)    # Deepgram's: unreachable, or refusing
+        if problem:
+            text = f"{'✕' if s.fatal else '⚠'} {problem}"
+        else:
+            speaking = s.vad.probability(s.fed - 8000, s.fed) >= s.vad.threshold
+            text = (f"● listening — level {_db(self.gain.peak)}, gain {self.gain.gain:.1f}×"
+                    f"{', speech…' if speaking else ''}")
         for sink in self.sinks:
             sink.status(text)

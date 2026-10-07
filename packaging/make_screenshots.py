@@ -1,6 +1,6 @@
 """Render the README's pictures from the app's real widgets.
 
-    python packaging/make_screenshots.py      # → docs/images/{banner,window,settings}.png
+    python packaging/make_screenshots.py      # → docs/images/{banner,window,settings,settings-deepgram}.png
 
 Nothing here is mocked up: the transcript panel, the translate button, the
 Google Translate popup and the settings dialog are the classes the app runs,
@@ -148,9 +148,10 @@ def banner_png():
     img.save(str(OUT / "banner.png"))
 
 
-def settings_png():
+def settings_png(name: str = "settings.png", **chosen):
     from src.ui.settings import AppSettings, SettingsDialog
-    d = SettingsDialog(AppSettings())
+    os.environ.pop("DEEPGRAM_API_KEY", None)        # the hint as most people see it
+    d = SettingsDialog(AppSettings(**chosen))
     d.adjustSize()
     d.show()
     QApplication.processEvents()
@@ -159,7 +160,7 @@ def settings_png():
     p = QPainter(img)
     d.render(p)
     p.end()
-    img.save(str(OUT / "settings.png"))
+    img.save(str(OUT / name))
 
 
 def main():
@@ -168,8 +169,10 @@ def main():
     banner_png()
     window_png()
     settings_png()
+    # A made-up key: the field shows it masked, as it is shown.
+    settings_png("settings-deepgram.png", model="deepgram", deepgram_key="0" * 40)
     (OUT / ".render.ini").unlink(missing_ok=True)
-    print(f"→ {OUT.relative_to(ROOT)}/ banner.png window.png settings.png")
+    print(f"→ {OUT.relative_to(ROOT)}/ banner.png window.png settings.png settings-deepgram.png")
 
 
 if __name__ == "__main__":

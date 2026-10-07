@@ -2,8 +2,8 @@
 
 Threads:
   * the GUI thread — the window, the tray, the menu, the settings dialog;
-  * a loader thread whenever a model is loaded, so the window keeps working
-    while Whisper loads;
+  * a loader thread whenever a model is loaded (or a Deepgram key checked),
+    so the window keeps working meanwhile;
   * the pipeline thread — capture, streamer, Whisper; it only talks to the GUI
     through Qt signals (queued across threads), and the GUI only talks to it
     through Pipeline.stop() and set_paused(), which just set flags.
@@ -29,8 +29,9 @@ from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QSystemTrayIcon
 
+from src.config import DEEPGRAM_MODEL_NAME
 from src.core.debug import log
-from src.session import effective_args
+from src.session import effective_args, loading_text, make_engine, make_streamer
 from src.ui.overlay import TranscriptWindow
 from src.ui.settings import AppSettings, SettingsDialog, open_store
 from src.ui.theme import polish_menu
@@ -187,8 +188,11 @@ class Controller(QObject):
         self.click_action.setChecked(new.click_through)
         self.click_action.blockSignals(False)
         if needs == "engine":
-            chosen = [v for v in (new.device, new.precision) if v != "auto"]
-            self.window.add_note(" · ".join([f"Switched to {new.model}", *chosen]))
+            if new.model == DEEPGRAM_MODEL_NAME:
+                self.window.add_note(f"Switched to Deepgram · {new.deepgram_language}")
+            else:
+                chosen = [v for v in (new.device, new.precision) if v != "auto"]
+                self.window.add_note(" · ".join([f"Switched to {new.model}", *chosen]))
             self._restart(reload_engine=True)
         elif needs == "pipeline":
             self.window.add_note("Listening restarted with the new settings")
@@ -224,18 +228,21 @@ class Controller(QObject):
 
     def _load_engine(self):
         a = self.args
-        self.window.set_status(f"Loading Whisper {a.model}…", "loading")
+        self.window.set_status(loading_text(a), "loading")
         if self.tray is not None:
-            self.tray.setToolTip(f"LiveTranscribe — loading {a.model}")
-        threading.Thread(target=self._load, args=(a.model, a.device, a.beam, a.precision),
+            self.tray.setToolTip(f"LiveTranscribe — {loading_text(a)}")
+        threading.Thread(target=self._load, args=(make_engine(a),),
                          name="model-loader", daemon=True).start()
 
-    def _load(self, model, device, beam, precision):
-        from src.audio.engine import WhisperEngine
+    def _load(self, engine):
+        from src.audio.deepgram import DeepgramError
         try:
-            engine = WhisperEngine(model, device, beam, precision).load()
+            engine = engine.load()
+        except DeepgramError as e:  # no key, a refused key, no network
+            self.engine_failed.emit(f"{e} — see ⚙ Settings" if e.fatal else str(e))
+            return
         except Exception as e:  # a missing model, a broken CUDA install, no GPU memory
-            self.engine_failed.emit(f"Could not load {model}: {e}")
+            self.engine_failed.emit(f"Could not load {self.args.model}: {e}")
             return
         self.engine_ready.emit(engine)
 
@@ -250,7 +257,6 @@ class Controller(QObject):
         if self._quitting:
             return
         from src.audio.capture import CaptureError
-        from src.audio.streamer import Streamer
         from src.audio.worker import Pipeline
         from src.session import open_session
         from src.sinks import ConsoleSink, TranscriptSink
@@ -269,14 +275,18 @@ class Controller(QObject):
             print("\n".join(self.session.header()))
             print("Settings: ⚙ in the window, or the tray icon.  Ctrl+C here also quits.\n")
 
-        streamer = Streamer(engine, language_check=self.args.arabic_only)
+        streamer = make_streamer(engine, self.args)
         self.pipeline = Pipeline(self.session.source, streamer, sinks,
                                  self.session.step_s, self.session.recorder)
         self.thread = threading.Thread(target=self._run, name="pipeline", daemon=True)
         self.thread.start()
 
-        self._on_cpu = engine.device != "cuda"
-        self._device_label = f"{self.args.model} · {'CPU' if self._on_cpu else 'GPU'}"
+        if engine.device == "cloud":
+            self._on_cpu = False
+            self._device_label = f"Deepgram {engine.model} · cloud"
+        else:
+            self._on_cpu = engine.device != "cuda"
+            self._device_label = f"{self.args.model} · {'CPU' if self._on_cpu else 'GPU'}"
         self._show_listening()
         self.pause_action.setEnabled(True)
         self.transcript_action.setEnabled(True)
@@ -315,6 +325,11 @@ class Controller(QObject):
 
     def _show_level(self, text: str):
         if self.paused or self._restart_pending is not None or self._quitting:
+            return
+        if text.startswith(("⚠", "✕")):     # Deepgram unreachable (amber), or refusing (red)
+            problem = text[2:]
+            self.window.set_status(problem, "error" if text.startswith("✕") else "loading",
+                                   tip=f"{self._device_label} — {problem}")
             return
         self._show_listening(text.split("— ", 1)[-1])   # "level -23 dB, gain 1.0×, speech…"
 

@@ -36,6 +36,38 @@ pw-record (speaker monitor) → AutoGain → Silero VAD → Streamer ⇄ Whisper
   segments; each segment is judged on its own text, not on the decode window
   it came in. A pass may generate at most 15 tokens per second of audio.
 
+### Deepgram
+
+```
+pw-record → AutoGain → Silero VAD → DeepgramStreamer ⇄ wss://api.deepgram.com (Nova-3) → window / terminal + transcript file
+```
+
+Chosen as the model `deepgram` (`src/audio/deepgram.py`). It replaces the
+**Streamer**, not the engine: the Streamer re-sends everything since the last
+commit every second, which Deepgram would bill eight times over. Its live API
+takes the audio once and answers with interim words (shown grey) and final
+ones (white), so `DeepgramStreamer` maps those onto the same `Update`s, behind
+the same `feed()/step()/finish()`. `session.make_engine()` and
+`make_streamer()` pick the pair.
+
+- **Only speech is sent**: Silero opens an utterance (with the 0.3 s lead-in)
+  and closes it after 0.7 s of silence with a `Finalize`; the answer marked
+  `from_finalize` ends the line, or 2 s without one does. `KeepAlive` every
+  5 s holds the socket in a pause; after 30 s without speech it is closed and
+  reopened at the next speech. `DEEPGRAM_SEND_SILENCE` sends everything.
+- **Times**: Deepgram counts only the audio it was sent, so each connection
+  keeps a map from its clock back to the stream's.
+- **Drops**: reconnect with backoff, send the utterance again from its start,
+  drop words already final by their stream time. 401/402/403 stop with the
+  reason in red; there is nothing to retry.
+- **The key**: saved settings (file mode 600), or `DEEPGRAM_API_KEY`, which
+  wins and is never saved. It goes in the `Authorization` header only — never
+  the URL, the log, the transcript or `--record`'s metadata
+  (`tests/test_deepgram.py` checks). `load()` checks the key against
+  `/v1/auth/token`, so a bad key fails the way a missing model does.
+- **Not available**: the "not Arabic" filter (it is Whisper's own language
+  detection), and `scripts/replay.py` — every replay would cost credit.
+
 Every constant is in `src/config.py`, with the measurement behind its value.
 The look — colours, radii, stylesheets — is in `src/ui/theme.py`: greyscale
 and one accent, and no colour typed anywhere else.
@@ -60,6 +92,7 @@ override-redirect (above fullscreen video, outside the window manager).
 ./run.sh --record                 # keep the session: logs/session-<time>/
 ./run.sh --sink <node.name>       # a specific output (names: wpctl status)
 ./run.sh --model large-v3 --device cuda --step 1.5   # this run only; not saved
+DEEPGRAM_API_KEY=… ./run.sh --model deepgram         # Deepgram, this run only
 ./run.sh --reset-settings         # forget saved settings first
 ./run.sh --bypass-wm              # outside the window manager
 ```
@@ -111,7 +144,9 @@ Every run logs to `logs/live-<time>.log` (newest linked as
 `logs/live-session.log`, 20 kept; `--no-debug` turns it off): every pass with
 its buffer and latency, what Whisper heard, what was committed, what stayed
 tentative, and every dropped segment with its reason and text. The summary
-at the end says whether the machine kept up.
+at the end says whether the machine kept up. With Deepgram, `DG` lines show
+each connection, every final result and how far behind the stream it came,
+and the summary gives that lag's p50/p90.
 
 ## Pictures and icons
 
@@ -155,9 +190,11 @@ src/
          gain.py        make-up gain
          vad.py         streaming Silero VAD
          engine.py      Whisper, gates, loop cutting, language detection
+         deepgram.py    Deepgram in the cloud: key check, WebSocket, its own streamer
          streamer.py    the streaming policy
          worker.py      the live loop
          recorder.py    --record
 scripts/                replay.py, offline.py, bench_latency.py, fetch_corpus.py
-tests/                  test_streamer.py (scripted engine), test_components.py, test_overlay.py
+tests/                  test_streamer.py (scripted engine), test_deepgram.py (fake socket),
+                        test_components.py, test_overlay.py
 ```

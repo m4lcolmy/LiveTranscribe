@@ -20,6 +20,9 @@ numpy>=1.26.0,<2              # ctranslate2 expects the numpy 1.x ABI (hifz)
 av>=17.0.1                    # decodes --file input and replay clips
 soundfile>=0.13.1             # --record writes FLAC
 
+# ── Deepgram (only when chosen in the settings) ───────────────────────
+websockets>=13                # Deepgram's live API, through its sync client
+
 # ── Tests ──────────────────────────────────────────────────────────────
 pytest>=9.0.0
 

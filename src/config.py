@@ -229,6 +229,43 @@ PHANTOM_LINES = (
     "موسيقى",
 )
 
+# ── Deepgram (cloud) ───────────────────────────────────────────────────
+# The one engine that is not local: chosen as the model "deepgram" in the
+# settings, with the user's own API key. It streams over a WebSocket and
+# decides itself which words are final, so it replaces the streamer above,
+# not just the engine (src/audio/deepgram.py says why).
+DEEPGRAM_MODEL_NAME = "deepgram"    # the model setting's value that selects it
+# Nova-3 is Deepgram's only model with Arabic (models-languages-overview,
+# 2026-10): ar and 16 dialects, streaming and batch.
+DEEPGRAM_MODEL = "nova-3"
+DEEPGRAM_LANGUAGE = "ar"
+DEEPGRAM_URL = "wss://api.deepgram.com/v1/listen"
+# Answers any valid key with its details: the cheapest way to check a key.
+DEEPGRAM_KEY_URL = "https://api.deepgram.com/v1/auth/token"
+DEEPGRAM_TIMEOUT_S = 5.0            # connecting, and checking the key
+# Results arrive on their own; a step only collects them, so it can be short.
+DEEPGRAM_STEP_S = 0.1
+# Deepgram bills the audio it is sent. Silero decides what is speech, and
+# only that is sent — with LEAD_IN_S before it, and END_SILENCE_S after it,
+# which is when the utterance is closed with a Finalize. Music and silence
+# between utterances cost nothing. True sends everything.
+DEEPGRAM_SEND_SILENCE = False
+# Deepgram closes a stream that gets neither audio nor a KeepAlive for 10 s.
+DEEPGRAM_KEEPALIVE_S = 5.0
+# After this long without speech the connection is closed, and opened again
+# at the next speech. Reopening takes ~0.5 s; the audio waits meanwhile, so
+# no word is lost, the first ones only come a little later.
+DEEPGRAM_IDLE_CLOSE_S = 30.0
+# A Finalize is answered with a result marked from_finalize — but not always
+# (Deepgram: "not guaranteed if there is no significant amount of audio").
+# After this long the line is closed with what was heard.
+DEEPGRAM_FINALIZE_WAIT_S = 2.0
+# A dropped connection is opened again after these waits, the last repeating.
+# The utterance in progress is sent again from its start (at most
+# DEEPGRAM_RESEND_MAX_S of it), and words already final are not repeated.
+DEEPGRAM_RETRY_BACKOFF_S = (0.5, 1.0, 2.0, 5.0)
+DEEPGRAM_RESEND_MAX_S = 30.0
+
 # ── Overlay (step 2) ───────────────────────────────────────────────────
 # GNOME on Wayland lets no app place its own window or keep it on top ("by
 # design" — GNOME Discourse, 2025-09), and mutter has no layer-shell. The

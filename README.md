@@ -7,8 +7,9 @@ plays — a YouTube video, a lecture, a news stream, a call. It listens to your
 speakers (not your microphone), turns the Arabic speech into text, and shows
 it in a small window that stays on top of everything else.
 
-It all runs on your own computer, on your graphics card if you have one.
-Nothing you listen to is sent anywhere.
+It runs on your own computer, on your graphics card if you have one, and
+nothing you listen to is sent anywhere. If you prefer, it can use
+[Deepgram](#deepgram-cloud) in the cloud instead, with your own API key.
 
 <p align="center">
   <img src="docs/images/window.png" alt="The LiveTranscribe window at the bottom of the screen, with a selected sentence translated into English by Google Translate" width="820">
@@ -95,6 +96,34 @@ Right-click the text → **Google Translate** to choose how it works:
 > select is sent to Google Translate. If Google is busy it may refuse for a
 > while — the popup will say so.
 
+## Deepgram (cloud)
+
+<img src="docs/images/settings-deepgram.png" alt="The settings window with Deepgram chosen: API key and dialect" width="440" align="right">
+
+Instead of your own computer, LiveTranscribe can use **Deepgram**'s Nova-3
+model, which knows Arabic and its dialects. It needs no graphics card, but it
+needs the internet and a Deepgram account, and Deepgram charges for the audio
+it hears.
+
+1. Create an API key at [console.deepgram.com](https://console.deepgram.com)
+   → **API Keys**.
+2. Click **⚙**, set **Model** to **Deepgram (cloud)**, and paste the key into
+   **API key**. **Test** says whether Deepgram accepts it; the 👁 button shows
+   it.
+3. Choose the **Dialect**, or leave it on **Arabic (general)**.
+4. **Save**. The top bar says `Deepgram nova-3 · cloud`.
+
+Only speech is sent: silence and music between sentences are not, so they
+cost nothing. Grey and white words work as before — grey is Deepgram's first
+guess, white its final answer.
+
+The key is kept in LiveTranscribe's settings file, which only your user can
+read. To keep it out of that file, start the app with the key in the
+`DEEPGRAM_API_KEY` environment variable instead; that one is used and never
+saved. **Ignore speech that is not Arabic** does not work with Deepgram.
+
+<br clear="right">
+
 ## Settings
 
 <img src="docs/images/settings.png" alt="The settings window" width="440" align="right">
@@ -107,7 +136,10 @@ listening restarted, the dialog says so beside **Save**.
 - **Recognition**
   - **Model** — `small` is fast and the default. `large-v3` is more accurate
     but several times slower (download it with any Whisper tool first).
+    **Deepgram (cloud)** sends the speech to Deepgram instead; see
+    [Deepgram (cloud)](#deepgram-cloud).
   - **Run on** — the graphics card (GPU) or the processor (CPU).
+  - **API key**, **Dialect** — for Deepgram only, in place of **Run on**.
 - **Audio**
   - **Listen to** — your default speakers, or a specific output.
   - **Ignore speech that is not Arabic** — English speech is left out instead
@@ -119,7 +151,7 @@ listening restarted, the dialog says so beside **Save**.
 - **Translation** — **Translate** (off, a button, or at once) and **Into**
   which language; see above.
 - **Advanced** (click to open) — **Precision**, and **Update every**: how
-  often the text is refreshed.
+  often the text is refreshed. Whisper only.
 
 <br clear="right">
 
@@ -146,14 +178,25 @@ with the settings, right-click the LiveTranscribe icon in the app menu →
 Start it with `./run.sh --bypass-wm`, or hold Super, right-click the window's
 top bar and choose **Always on Top**.
 
+**Deepgram: the dot is red.**
+The top bar says why. *Deepgram rejected the API key* — check it in ⚙ with
+**Test**. *Out of credit* — top up the Deepgram account, then pause and
+resume. If the dot is amber and says *trying again*, the internet connection
+dropped; it reconnects by itself and does not lose the sentence in progress.
+
 **Some words are wrong.**
 Clear standard Arabic (news, lectures) works best. Dialects and speech over
 loud music are harder. The `large-v3` model is more accurate, but slower.
 
 ## Privacy
 
-Speech recognition runs entirely on your computer; audio never leaves it. The
-only exception is translation, and only for text you select.
+With a Whisper model, speech recognition runs entirely on your computer and
+audio never leaves it; the only exception is translation, and only for text
+you select.
+
+With **Deepgram**, the speech you play is sent to Deepgram while it is
+playing (silence and music are not), under your Deepgram account and
+[its privacy policy](https://deepgram.com/privacy). Nothing else is.
 
 ## Uninstall
 

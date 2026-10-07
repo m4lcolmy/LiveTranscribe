@@ -163,6 +163,7 @@ then
     ok "$MODEL_REPO is already downloaded"
 else
     echo "  LiveTranscribe never downloads anything while it runs; the model is fetched now, once."
+    echo "  (Only using Deepgram, in the cloud? Then this can be skipped.)"
     if ask "Download $MODEL_REPO (~480 MB)?"; then
         "$PY" -c "from huggingface_hub import snapshot_download; snapshot_download('$MODEL_REPO')"
         ok "model downloaded to ~/.cache/huggingface"

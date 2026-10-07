@@ -5,6 +5,7 @@
     ./run.sh --file lecture.mp4       # a file, at the pace it would play
     ./run.sh --record                 # also keep the session for scripts/replay.py
     ./run.sh --sink <node.name>       # a specific output instead of the default
+    ./run.sh --model deepgram         # Deepgram in the cloud (key: ⚙ or DEEPGRAM_API_KEY)
 """
 
 import argparse
@@ -33,7 +34,7 @@ def parse_args(argv):
                                   "instead of following the default one")
     # Model, device, step and output default to the saved settings (the ⚙
     # dialog); a flag given here overrides them for this run and is not saved.
-    p.add_argument("--model", help="model size or folder (default: the saved setting)")
+    p.add_argument("--model", help="model size or folder, or deepgram (default: the saved setting)")
     p.add_argument("--device", choices=["auto", "cuda", "cpu"])
     p.add_argument("--beam", type=int, help="beam size")
     p.add_argument("--step", type=float, help="seconds between passes "
@@ -55,18 +56,16 @@ def parse_args(argv):
 
 def run_console(args) -> int:
     from src.audio.capture import CaptureError
-    from src.audio.engine import WhisperEngine
-    from src.audio.streamer import Streamer
     from src.audio.worker import Pipeline
-    from src.session import effective_args, open_session
+    from src.session import effective_args, loading_text, make_engine, make_streamer, open_session
     from src.sinks import ConsoleSink, TranscriptSink
     from src.ui.settings import AppSettings, open_store
 
     args = effective_args(args, AppSettings.load(open_store()))
-    print(f"Loading Whisper {args.model}…", end="", flush=True)
+    print(loading_text(args), end="", flush=True)
     try:
-        engine = WhisperEngine(args.model, args.device, args.beam, args.precision).load()
-    except Exception as e:  # a missing model or a broken CUDA install: say which
+        engine = make_engine(args).load()
+    except Exception as e:  # a missing model, a broken CUDA install, a refused key: say which
         print(f"\nCould not load the model: {e}")
         return 1
     print("\r\033[K", end="")
@@ -82,7 +81,7 @@ def run_console(args) -> int:
     print("Bold = final, grey = may still change.  Ctrl+C to stop.\n")
 
     pipeline = Pipeline(
-        session.source, Streamer(engine, language_check=args.arabic_only),
+        session.source, make_streamer(engine, args),
         [ConsoleSink(), TranscriptSink(session.transcript, session.source.label)],
         session.step_s, session.recorder,
     )

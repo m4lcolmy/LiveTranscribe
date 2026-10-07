@@ -191,9 +191,11 @@ def test_click_through_is_a_window_flag(window):
 def test_settings_survive_a_restart(store):
     chosen = AppSettings(model="large-v3", device="cuda", precision="int8_float16", step_s=1.5,
                          sink="alsa_output.test", font_px=30, opacity=60,
-                         show_tentative=False, arabic_only=False, click_through=True)
+                         show_tentative=False, arabic_only=False, click_through=True,
+                         deepgram_key="dg-key", deepgram_language="ar-EG")
     chosen.save(store)
     assert AppSettings.load(QSettings(store.fileName(), QSettings.Format.IniFormat)) == chosen
+    assert os.stat(store.fileName()).st_mode & 0o077 == 0       # it holds the key: owner only
 
 
 def test_nothing_saved_gives_the_defaults_and_a_corrupt_value_falls_back_alone(store):
@@ -208,6 +210,12 @@ def test_each_change_restarts_only_what_it_must():
     base = AppSettings()
     assert base.needs(AppSettings(model="large-v3")) == "engine"
     assert base.needs(AppSettings(precision="int8")) == "engine"
+    assert base.needs(AppSettings(model="deepgram")) == "engine"
+    assert base.needs(AppSettings(deepgram_key="new")) == "window"      # Whisper is in use
+    cloud = AppSettings(model="deepgram", deepgram_key="old")
+    assert cloud.needs(AppSettings(model="deepgram", deepgram_key="new")) == "engine"
+    assert cloud.needs(AppSettings(model="deepgram", deepgram_key="old",
+                                   deepgram_language="ar-MA")) == "engine"
     assert base.needs(AppSettings(sink="alsa_output.x")) == "pipeline"
     assert base.needs(AppSettings(step_s=0.5)) == "pipeline"
     assert base.needs(AppSettings(font_px=40, opacity=50, show_tentative=False)) == "window"
@@ -233,6 +241,48 @@ def test_the_dialog_previews_the_look_and_says_what_saving_will_restart(app):
     assert dialog.note.text() == "Saving restarts listening"
     dialog.precision.setCurrentIndex(dialog.precision.findData("int8"))
     assert dialog.note.text() == "Saving reloads the model"
+    dialog.close()
+
+
+def test_choosing_deepgram_swaps_the_local_rows_for_the_key_and_dialect(app, monkeypatch):
+    from src.ui.settings import SettingsDialog
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    dialog = SettingsDialog(AppSettings())
+    dialog.show()
+    assert dialog.device.isVisible() and not dialog.deepgram_key.isVisible()
+    dialog.model.setCurrentIndex(dialog.model.findData("deepgram"))
+    assert dialog.deepgram_key.isVisible() and dialog.deepgram_language.isVisible()
+    assert not dialog.device.isVisible() and not dialog.advanced_toggle.isVisible()
+    assert not dialog.arabic_only.isEnabled()
+    assert dialog.deepgram_key.echoMode() == dialog.deepgram_key.EchoMode.Password
+    dialog.show_key.toggle()
+    assert dialog.deepgram_key.echoMode() == dialog.deepgram_key.EchoMode.Normal
+    dialog.deepgram_key.setText("  dg-key ")
+    dialog.deepgram_language.setCurrentIndex(dialog.deepgram_language.findData("ar-EG"))
+    chosen = dialog.result_settings()
+    assert (chosen.model, chosen.deepgram_key, chosen.deepgram_language) == ("deepgram", "dg-key", "ar-EG")
+    assert dialog.note.text() == "Saving reloads the model"
+    dialog.model.setCurrentIndex(0)
+    assert dialog.device.isVisible() and not dialog.deepgram_key.isVisible()
+    dialog.close()
+
+
+def test_the_test_button_says_whether_deepgram_takes_the_key(app, monkeypatch):
+    from src.audio import deepgram
+    from src.ui.settings import SettingsDialog
+
+    def check(key):
+        if key != "good":
+            raise deepgram.DeepgramError("Deepgram rejected the API key", fatal=True)
+    monkeypatch.setattr(deepgram, "check_key", check)
+    dialog = SettingsDialog(AppSettings(model="deepgram", deepgram_key="bad"))
+    dialog.test_key.click()
+    assert wait_until(lambda: dialog.test_key.isEnabled(), app)
+    assert dialog.key_hint.text() == "✕ Deepgram rejected the API key"
+    dialog.deepgram_key.setText("good")
+    dialog.test_key.click()
+    assert wait_until(lambda: dialog.test_key.isEnabled(), app)
+    assert dialog.key_hint.text() == "✓ Deepgram accepts this key"
     dialog.close()
 
 

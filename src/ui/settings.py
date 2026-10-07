@@ -7,23 +7,26 @@ run only; it is never written back.
 
 The model list is the models actually in the Hugging Face cache: the app never
 downloads anything, so offering a model that is not there would only offer an
-error. Any other CTranslate2 Whisper folder can be picked by hand.
+error. Any other CTranslate2 Whisper folder can be picked by hand. The one
+model that is not local is Deepgram, with the user's own API key; the settings
+file holds that key, so it is readable by its owner only.
 """
 
 import json
 import os
 import subprocess
+import threading
 from dataclasses import asdict, dataclass, fields
 
 from PyQt6.QtCore import QSettings, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QPushButton, QSlider, QToolButton, QVBoxLayout, QWidget,
+    QLineEdit, QPushButton, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
 
 from src.config import (
-    ASR_STEP_S_CPU, ASR_STEP_S_GPU, DEVICE, OVERLAY_FONT_MAX_PX, OVERLAY_FONT_MIN_PX,
-    OVERLAY_FONT_PX, OVERLAY_OPACITY, WHISPER_MODEL,
+    ASR_STEP_S_CPU, ASR_STEP_S_GPU, DEEPGRAM_LANGUAGE, DEEPGRAM_MODEL_NAME, DEVICE,
+    OVERLAY_FONT_MAX_PX, OVERLAY_FONT_MIN_PX, OVERLAY_FONT_PX, OVERLAY_OPACITY, WHISPER_MODEL,
 )
 from src.ui import icons
 from src.ui.theme import TEXT, TEXT_2, dialog_palette, dialog_stylesheet
@@ -39,7 +42,7 @@ def open_store() -> QSettings:
 
 @dataclass
 class AppSettings:
-    model: str = WHISPER_MODEL        # a size name from the cache, or a model folder
+    model: str = WHISPER_MODEL        # a size name from the cache, a model folder, or "deepgram"
     device: str = DEVICE              # auto | cuda | cpu
     precision: str = "auto"           # auto | float16 | int8_float16 | int8
     step_s: float = 0.0               # seconds between passes; 0 = by device
@@ -51,6 +54,8 @@ class AppSettings:
     click_through: bool = False
     translate: str = "button"         # off | button | auto — Google Translate on selection
     translate_to: str = default_target()
+    deepgram_key: str = ""            # the user's own; DEEPGRAM_API_KEY in the environment wins
+    deepgram_language: str = DEEPGRAM_LANGUAGE   # ar, or one of Nova-3's Arabic dialects
 
     @classmethod
     def load(cls, store: QSettings) -> "AppSettings":
@@ -71,14 +76,20 @@ class AppSettings:
         for name, value in asdict(self).items():
             store.setValue(f"settings/{name}", value)
         store.sync()
+        try:
+            os.chmod(store.fileName(), 0o600)     # it can hold the Deepgram key
+        except OSError:
+            pass
 
     # What a change needs: a new engine, a new pipeline, or just the window.
     ENGINE = ("model", "device", "precision")
+    DEEPGRAM = ("deepgram_key", "deepgram_language")    # an engine change only while in use
     PIPELINE = ("step_s", "sink", "arabic_only")
 
     def needs(self, other: "AppSettings") -> str:
         """'engine', 'pipeline' or 'window': the least that must restart to apply `other`."""
-        if any(getattr(self, k) != getattr(other, k) for k in self.ENGINE):
+        engine = self.ENGINE + (self.DEEPGRAM if other.model == DEEPGRAM_MODEL_NAME else ())
+        if any(getattr(self, k) != getattr(other, k) for k in engine):
             return "engine"
         if any(getattr(self, k) != getattr(other, k) for k in self.PIPELINE):
             return "pipeline"
@@ -94,6 +105,23 @@ MODEL_NOTES = {
     "medium": "between small and large",
     "base": "fastest, least accurate",
 }
+
+
+DEEPGRAM_HINT = "Nova-3, in the cloud: speech is sent to Deepgram"
+# Nova-3's Arabic: general, and the dialects it was trained for (2026-10).
+DEEPGRAM_LANGUAGES = [
+    ("ar", "Arabic (general)"), ("ar-EG", "Egyptian"), ("ar-SA", "Saudi"), ("ar-AE", "Emirati"),
+    ("ar-QA", "Qatari"), ("ar-KW", "Kuwaiti"), ("ar-IQ", "Iraqi"), ("ar-SY", "Syrian"),
+    ("ar-LB", "Lebanese"), ("ar-JO", "Jordanian"), ("ar-PS", "Palestinian"), ("ar-SD", "Sudanese"),
+    ("ar-TD", "Chadian"), ("ar-MA", "Moroccan"), ("ar-DZ", "Algerian"), ("ar-TN", "Tunisian"),
+    ("ar-IR", "Iranian Arabic"),
+]
+
+
+def key_hint() -> str:
+    if os.environ.get("DEEPGRAM_API_KEY", "").strip():
+        return "DEEPGRAM_API_KEY is set, and used instead"
+    return "From console.deepgram.com → API Keys"
 
 
 def cached_models() -> list[tuple[str, str]]:
@@ -167,14 +195,19 @@ class _Section:
         self.grid = grid
         self.row = 0
 
-    def add(self, label: str, field: QWidget, hint: QLabel | None = None):
+    def add(self, label: str, field: QWidget, hint: QLabel | None = None) -> list[QWidget]:
+        """The row's widgets, so it can be hidden when it does not apply."""
+        row = [field]
         if label:
-            self.grid.addWidget(QLabel(label), self.row, 0)
+            row.insert(0, QLabel(label))
+            self.grid.addWidget(row[0], self.row, 0)
         self.grid.addWidget(field, self.row, 1)
         self.row += 1
         if hint is not None:
             self.grid.addWidget(hint, self.row, 1)
             self.row += 1
+            row.append(hint)
+        return row
 
 
 def _hint(text: str = "") -> QLabel:
@@ -187,6 +220,8 @@ def _hint(text: str = "") -> QLabel:
 class SettingsDialog(QDialog):
     # The look, as it is being chosen: the window shows it before Save.
     appearance_changed = pyqtSignal(object)
+    # The Test button's answer, from its thread: (text, the key works).
+    key_checked = pyqtSignal(str, bool)
 
     def __init__(self, current: AppSettings, parent: QWidget | None = None,
                  click_through_allowed: bool = True):
@@ -208,6 +243,7 @@ class SettingsDialog(QDialog):
         self.model = self._combo([])
         for name, detail in cached_models():
             self._add_choice(self.model, name, name, detail)
+        self._add_choice(self.model, DEEPGRAM_MODEL_NAME, "Deepgram (cloud)", DEEPGRAM_HINT)
         if self.model.findData(current.model) < 0:      # a folder chosen earlier
             self._add_choice(self.model, current.model,
                              os.path.basename(current.model.rstrip("/")), current.model)
@@ -223,9 +259,34 @@ class SettingsDialog(QDialog):
             self.device.setItemData(0, "No usable GPU now, so the CPU", Qt.ItemDataRole.ToolTipRole)
         self._select(self.device, current.device)
         # Said under the field only when it matters: no GPU to run on.
-        recognition.add("Run on", self.device,
-                        None if cuda_usable() else self._hint_for(self.device))
+        self._local_rows = recognition.add("Run on", self.device,
+                                           None if cuda_usable() else self._hint_for(self.device))
         self._tip_for(self.device)
+
+        # Deepgram's rows, in place of the local model's.
+        self.deepgram_key = QLineEdit(current.deepgram_key)
+        self.deepgram_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.deepgram_key.setPlaceholderText("Deepgram API key")
+        self.deepgram_key.setCursorPosition(0)
+        self.show_key = self.deepgram_key.addAction(icons.icon(icons.EYE, 16),
+                                                    QLineEdit.ActionPosition.TrailingPosition)
+        self.show_key.setCheckable(True)
+        self.show_key.setToolTip("Show the key")
+        self.show_key.toggled.connect(self._reveal_key)
+        self.test_key = QPushButton("Test")
+        self.test_key.clicked.connect(self._test_key)
+        key_row = QWidget()
+        row = QHBoxLayout(key_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(self.deepgram_key, 1)
+        row.addWidget(self.test_key)
+        self.key_hint = _hint(key_hint())
+        self.key_checked.connect(self._key_checked)
+        self._cloud_rows = recognition.add("API key", key_row, self.key_hint)
+        self.deepgram_language = self._combo([(code, name, "") for code, name in DEEPGRAM_LANGUAGES])
+        self._select(self.deepgram_language, current.deepgram_language)
+        self._cloud_rows += recognition.add("Dialect", self.deepgram_language)
 
         # Audio
         audio = self._section("Audio")
@@ -281,7 +342,7 @@ class SettingsDialog(QDialog):
         self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.advanced_toggle.setIconSize(QSize(14, 14))
         self.advanced_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._heading(self.advanced_toggle)
+        self.advanced_heading = self._heading(self.advanced_toggle)
         self.advanced = QWidget()
         advanced = _Section(self._grid(self.advanced))
         self.precision = self._combo(PRECISIONS)
@@ -297,6 +358,7 @@ class SettingsDialog(QDialog):
         in_use = current.precision != "auto" or current.step_s != 0.0
         self.advanced_toggle.setChecked(in_use)
         self._show_advanced(in_use)
+        self._show_engine_rows()
 
         # What Save will do, then the buttons.
         self.note = QLabel("")
@@ -319,12 +381,14 @@ class SettingsDialog(QDialog):
         # Long output names must not widen the dialog: the drop-downs size to
         # a fixed number of characters and elide the rest.
         for combo in (self.model, self.device, self.precision, self.step, self.sink,
-                      self.translate, self.translate_to):
+                      self.translate, self.translate_to, self.deepgram_language):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(28)
             combo.currentIndexChanged.connect(self._changed)
         for box in (self.arabic_only, self.click_through):
             box.toggled.connect(self._changed)
+        self.deepgram_key.textChanged.connect(self._changed)
+        self.model.currentIndexChanged.connect(self._show_engine_rows)
         self.font_px.valueChanged.connect(self._appearance)
         self.opacity.valueChanged.connect(self._appearance)
         self.show_tentative.toggled.connect(self._appearance)
@@ -341,10 +405,14 @@ class SettingsDialog(QDialog):
         grid.setColumnStretch(1, 1)
         return grid
 
-    def _heading(self, title: QWidget):
-        """A section's title, and a rule from it to the right edge."""
+    def _heading(self, title: QWidget) -> QWidget:
+        """A section's title, and a rule from it to the right edge — one widget, spacing and all."""
+        box = QWidget()
+        column = QVBoxLayout(box)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
         if self._body.count():
-            self._body.addSpacing(20)
+            column.addSpacing(20)
         rule = QFrame()
         rule.setProperty("role", "rule")
         rule.setFixedHeight(1)
@@ -352,8 +420,10 @@ class SettingsDialog(QDialog):
         row.setSpacing(10)
         row.addWidget(title)
         row.addWidget(rule, 1, Qt.AlignmentFlag.AlignVCenter)
-        self._body.addLayout(row)
-        self._body.addSpacing(12)
+        column.addLayout(row)
+        column.addSpacing(12)
+        self._body.addWidget(box)
+        return box
 
     def _section(self, title: str) -> _Section:
         heading = QLabel(title)
@@ -415,12 +485,60 @@ class SettingsDialog(QDialog):
         row.addWidget(value)
         return box
 
+    @property
+    def _cloud(self) -> bool:
+        return self.model.currentData() == DEEPGRAM_MODEL_NAME
+
     def _show_advanced(self, on: bool):
-        self.advanced.setVisible(on)
+        self.advanced.setVisible(on and not self._cloud)
         self.advanced_toggle.setIcon(icons.icon(icons.CHEVRON_DOWN if on else icons.CHEVRON_RIGHT,
                                                 14, rest=TEXT_2, hover=TEXT))
         if self.isVisible():
             QTimer.singleShot(0, self.adjustSize)
+
+    def _show_engine_rows(self, *_):
+        """Deepgram's key and dialect, or the local model's device and Advanced tuning."""
+        cloud = self._cloud
+        for widget in self._cloud_rows:
+            widget.setVisible(cloud)
+        for widget in self._local_rows:
+            empty_hint = widget.property("role") == "hint" and not widget.text()
+            widget.setVisible(not cloud and not empty_hint)
+        self.advanced_heading.setVisible(not cloud)
+        self.advanced.setVisible(not cloud and self.advanced_toggle.isChecked())
+        self.arabic_only.setEnabled(not cloud)
+        self.arabic_only.setToolTip("Whisper only: it relies on Whisper's own language detection"
+                                    if cloud else "")
+        if self.isVisible():
+            QTimer.singleShot(0, self.adjustSize)
+
+    def _reveal_key(self, shown: bool):
+        self.deepgram_key.setEchoMode(QLineEdit.EchoMode.Normal if shown
+                                      else QLineEdit.EchoMode.Password)
+        self.show_key.setIcon(icons.icon(icons.EYE_OFF if shown else icons.EYE, 16))
+        self.show_key.setToolTip("Hide the key" if shown else "Show the key")
+
+    def _test_key(self):
+        from src.audio.deepgram import DeepgramError, check_key
+        key = self.deepgram_key.text().strip()
+        self.test_key.setEnabled(False)
+        self.key_hint.setText("Asking Deepgram…")
+
+        def ask():
+            try:
+                check_key(key)
+                answer = ("✓ Deepgram accepts this key", True)
+            except DeepgramError as e:
+                answer = (f"✕ {e}", False)
+            try:
+                self.key_checked.emit(*answer)
+            except RuntimeError:            # the dialog closed meanwhile
+                pass
+        threading.Thread(target=ask, name="deepgram-key", daemon=True).start()
+
+    def _key_checked(self, text: str, _ok: bool):
+        self.key_hint.setText(text)
+        self.test_key.setEnabled(True)
 
     # ── Changes ────────────────────────────────────────────────────────
 
@@ -458,4 +576,6 @@ class SettingsDialog(QDialog):
             click_through=self.click_through.isChecked(),
             translate=self.translate.currentData(),
             translate_to=self.translate_to.currentData(),
+            deepgram_key=self.deepgram_key.text().strip(),
+            deepgram_language=self.deepgram_language.currentData(),
         )

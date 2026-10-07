@@ -148,6 +148,14 @@ def dialog_stylesheet() -> str:
     QComboBox QAbstractItemView::item {{ min-height: 24px; padding: 0 6px; border-radius: 3px; }}
     QComboBox QAbstractItemView::item:disabled {{ color: {rgba(TEXT_3)}; }}
 
+    QLineEdit {{
+        background: {rgba(FIELD)}; color: {rgba(TEXT)}; font-size: {UI_PX}px;
+        border: 1px solid {rgba(LINE)}; border-radius: {RADIUS_CONTROL}px;
+        padding: 4px 8px; min-height: 18px; selection-background-color: {rgba(ACCENT)};
+    }}
+    QLineEdit:hover {{ background: {rgba(FIELD_HOVER)}; }}
+    QLineEdit:focus {{ border-color: {rgba(ACCENT)}; }}
+
     QCheckBox {{ color: {rgba(TEXT)}; font-size: {UI_PX}px; spacing: 8px; }}
     QCheckBox:disabled {{ color: {rgba(TEXT_3)}; }}
     QCheckBox::indicator {{
