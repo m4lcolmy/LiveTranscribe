@@ -60,11 +60,16 @@ the same `feed()/step()/finish()`. `session.make_engine()` and
 - **Drops**: reconnect with backoff, send the utterance again from its start,
   drop words already final by their stream time. 401/402/403 stop with the
   reason in red; there is nothing to retry.
-- **The key**: saved settings (file mode 600), or `DEEPGRAM_API_KEY`, which
-  wins and is never saved. It goes in the `Authorization` header only — never
-  the URL, the log, the transcript or `--record`'s metadata
-  (`tests/test_deepgram.py` checks). `load()` checks the key against
-  `/v1/auth/token`, so a bad key fails the way a missing model does.
+- **The key** (`src/core/keystore.py`): in the system keyring through
+  `keyring` (Secret Service — GNOME Keyring), never in the settings file; a
+  key the first version left there is moved on start. No keyring, no saving:
+  `DEEPGRAM_API_KEY` instead, which always wins and is never saved. The
+  dialog's field is write-only — a saved key shows as its last four
+  characters and is read only to connect or to **Test**. It goes in the
+  `Authorization` header only — never the URL, the log, the transcript or
+  `--record`'s metadata (`tests/test_deepgram.py` checks). `load()` checks it
+  against `/v1/auth/token`, so a bad key fails the way a missing model does.
+  The tests run on an in-memory keyring (`tests/conftest.py`).
 - **Not available**: the "not Arabic" filter (it is Whisper's own language
   detection), and `scripts/replay.py` — every replay would cost credit.
 
@@ -183,6 +188,7 @@ src/
          tray.py        the app / tray icon
          x11.py         every workspace, and the click-through input region
   core/  device.py      GPU detection, CUDA libraries from pip
+         keystore.py    the Deepgram key in the system keyring
          arabic.py      comparison keys for Arabic words
          debug.py       the session log
   audio/ capture.py     pw-record on the output monitor

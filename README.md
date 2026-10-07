@@ -108,8 +108,8 @@ it hears.
 1. Create an API key at [console.deepgram.com](https://console.deepgram.com)
    → **API Keys**.
 2. Click **⚙**, set **Model** to **Deepgram (cloud)**, and paste the key into
-   **API key**. **Test** says whether Deepgram accepts it; the 👁 button shows
-   it.
+   **API key**. **Test** says whether Deepgram accepts it; 👁 shows what you
+   typed, until you save.
 3. Choose the **Dialect**, or leave it on **Arabic (general)**.
 4. **Save**. The top bar says `Deepgram nova-3 · cloud`.
 
@@ -117,10 +117,15 @@ Only speech is sent: silence and music between sentences are not, so they
 cost nothing. Grey and white words work as before — grey is Deepgram's first
 guess, white its final answer.
 
-The key is kept in LiveTranscribe's settings file, which only your user can
-read. To keep it out of that file, start the app with the key in the
-`DEEPGRAM_API_KEY` environment variable instead; that one is used and never
-saved. **Ignore speech that is not Arabic** does not work with Deepgram.
+**The key is kept in your system keyring** (GNOME Keyring, the same place
+your browser and Wi-Fi passwords are), encrypted and unlocked when you log
+in — not in a settings file. Once saved, it is never shown again: the field
+stays empty and says only `Saved key …a1b2`, its last four characters. Paste
+a new key to replace it, or click **Remove** to delete it. To use a key
+without saving it anywhere, start the app with it in the `DEEPGRAM_API_KEY`
+environment variable; that one wins and is never saved.
+
+**Ignore speech that is not Arabic** does not work with Deepgram.
 
 <br clear="right">
 
@@ -179,8 +184,8 @@ Start it with `./run.sh --bypass-wm`, or hold Super, right-click the window's
 top bar and choose **Always on Top**.
 
 **Deepgram: the dot is red.**
-The top bar says why. *Deepgram rejected the API key* — check it in ⚙ with
-**Test**. *Out of credit* — top up the Deepgram account, then pause and
+The top bar says why. *Deepgram rejected the API key* — open ⚙ and click
+**Test** with the field empty to check the saved key, or paste a new one. *Out of credit* — top up the Deepgram account, then pause and
 resume. If the dot is amber and says *trying again*, the internet connection
 dropped; it reconnects by itself and does not lose the sentence in progress.
 
@@ -202,7 +207,7 @@ playing (silence and music are not), under your Deepgram account and
 
 ```bash
 ./install.sh --uninstall     # removes it from the app menu
-./install.sh --purge         # ...and its Python environment and saved settings
+./install.sh --purge         # ...and its Python environment, saved settings and Deepgram key
 ```
 
 Then delete this folder.

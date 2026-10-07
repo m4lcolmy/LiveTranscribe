@@ -22,6 +22,7 @@ soundfile>=0.13.1             # --record writes FLAC
 
 # ── Deepgram (only when chosen in the settings) ───────────────────────
 websockets>=13                # Deepgram's live API, through its sync client
+keyring>=25                   # the API key in GNOME Keyring (Secret Service), not in a file
 
 # ── Tests ──────────────────────────────────────────────────────────────
 pytest>=9.0.0

@@ -169,8 +169,12 @@ def main():
     banner_png()
     window_png()
     settings_png()
-    # A made-up key: the field shows it masked, as it is shown.
-    settings_png("settings-deepgram.png", model="deepgram", deepgram_key="0" * 40)
+    # A made-up key, in a keyring in memory: the real one is never touched.
+    import keyring
+    from src.core.keystore import MemoryKeyring, save
+    keyring.set_keyring(MemoryKeyring())
+    save("0" * 36 + "a1b2")
+    settings_png("settings-deepgram.png", model="deepgram")
     (OUT / ".render.ini").unlink(missing_ok=True)
     print(f"→ {OUT.relative_to(ROOT)}/ banner.png window.png settings.png settings-deepgram.png")
 

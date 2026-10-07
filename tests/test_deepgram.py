@@ -303,15 +303,16 @@ def test_the_session_log_never_holds_the_key(tmp_path):
 
 # ── Choosing it ────────────────────────────────────────────────────────
 
-def test_the_model_setting_picks_the_engine_and_the_streamer(monkeypatch):
+def test_the_model_setting_picks_the_engine_and_the_streamer():
     from src.audio.streamer import Streamer
+    from src.core import keystore
     from src.session import effective_args, make_engine, make_streamer
     from src.ui.settings import AppSettings
 
-    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    keystore.save(KEY)
     cli = SimpleNamespace(model=None, device=None, beam=None, step=None, sink=None)
-    args = effective_args(cli, AppSettings(model="deepgram", deepgram_key=KEY,
-                                           deepgram_language="ar-SA"))
+    args = effective_args(cli, AppSettings(model="deepgram", deepgram_language="ar-SA"))
+    assert not hasattr(args, "deepgram_key")            # read only when connecting
     engine = make_engine(args)
     assert isinstance(engine, DeepgramEngine) and (engine.api_key, engine.language) == (KEY, "ar-SA")
     assert isinstance(make_streamer(engine, args), DeepgramStreamer)
@@ -320,12 +321,3 @@ def test_the_model_setting_picks_the_engine_and_the_streamer(monkeypatch):
     whisper.device = "cpu"
     assert isinstance(make_streamer(whisper, args), Streamer)
 
-
-def test_the_environments_key_wins_and_is_never_saved(monkeypatch):
-    from src.session import effective_args
-    from src.ui.settings import AppSettings
-    monkeypatch.setenv("DEEPGRAM_API_KEY", "from-env")
-    cli = SimpleNamespace(model=None, device=None, beam=None, step=None, sink=None)
-    prefs = AppSettings(model="deepgram", deepgram_key="saved")
-    assert effective_args(cli, prefs).deepgram_key == "from-env"
-    assert prefs.deepgram_key == "saved"

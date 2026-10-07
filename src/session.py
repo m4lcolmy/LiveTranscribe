@@ -6,7 +6,6 @@ is built here, so the two cannot drift apart.
 """
 
 import copy
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,8 +53,6 @@ def effective_args(cli, prefs):
     args.sink = cli.sink if cli.sink is not None else (prefs.sink or None)
     args.precision = prefs.precision
     args.arabic_only = prefs.arabic_only
-    # The environment's key wins over the saved one, and is never saved.
-    args.deepgram_key = os.environ.get("DEEPGRAM_API_KEY", "").strip() or prefs.deepgram_key
     args.deepgram_language = prefs.deepgram_language
     return args
 
@@ -64,7 +61,9 @@ def make_engine(args):
     """The engine the settings ask for, not loaded yet: Whisper, or Deepgram."""
     if args.model == DEEPGRAM_MODEL_NAME:
         from src.audio.deepgram import DeepgramEngine
-        return DeepgramEngine(args.deepgram_key, args.deepgram_language)
+        from src.core import keystore
+        # Read from the keyring (or DEEPGRAM_API_KEY) only now, to connect.
+        return DeepgramEngine(keystore.key(), args.deepgram_language)
     from src.audio.engine import WhisperEngine
     return WhisperEngine(args.model, args.device, args.beam, args.precision)
 

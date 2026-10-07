@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QApplication
 
 from src.audio.streamer import Line, Streamer, Update
 from src.audio.worker import Pipeline
+from src.core import keystore
 from src.ui.settings import AppSettings
 from tests.test_streamer import FakeVad, ScriptedEngine
 
@@ -192,10 +193,9 @@ def test_settings_survive_a_restart(store):
     chosen = AppSettings(model="large-v3", device="cuda", precision="int8_float16", step_s=1.5,
                          sink="alsa_output.test", font_px=30, opacity=60,
                          show_tentative=False, arabic_only=False, click_through=True,
-                         deepgram_key="dg-key", deepgram_language="ar-EG")
+                         deepgram_language="ar-EG")
     chosen.save(store)
     assert AppSettings.load(QSettings(store.fileName(), QSettings.Format.IniFormat)) == chosen
-    assert os.stat(store.fileName()).st_mode & 0o077 == 0       # it holds the key: owner only
 
 
 def test_nothing_saved_gives_the_defaults_and_a_corrupt_value_falls_back_alone(store):
@@ -211,11 +211,9 @@ def test_each_change_restarts_only_what_it_must():
     assert base.needs(AppSettings(model="large-v3")) == "engine"
     assert base.needs(AppSettings(precision="int8")) == "engine"
     assert base.needs(AppSettings(model="deepgram")) == "engine"
-    assert base.needs(AppSettings(deepgram_key="new")) == "window"      # Whisper is in use
-    cloud = AppSettings(model="deepgram", deepgram_key="old")
-    assert cloud.needs(AppSettings(model="deepgram", deepgram_key="new")) == "engine"
-    assert cloud.needs(AppSettings(model="deepgram", deepgram_key="old",
-                                   deepgram_language="ar-MA")) == "engine"
+    assert base.needs(AppSettings(deepgram_language="ar-MA")) == "window"   # Whisper is in use
+    cloud = AppSettings(model="deepgram")
+    assert cloud.needs(AppSettings(model="deepgram", deepgram_language="ar-MA")) == "engine"
     assert base.needs(AppSettings(sink="alsa_output.x")) == "pipeline"
     assert base.needs(AppSettings(step_s=0.5)) == "pipeline"
     assert base.needs(AppSettings(font_px=40, opacity=50, show_tentative=False)) == "window"
@@ -244,9 +242,8 @@ def test_the_dialog_previews_the_look_and_says_what_saving_will_restart(app):
     dialog.close()
 
 
-def test_choosing_deepgram_swaps_the_local_rows_for_the_key_and_dialect(app, monkeypatch):
+def test_choosing_deepgram_swaps_the_local_rows_for_the_key_and_dialect(app):
     from src.ui.settings import SettingsDialog
-    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     dialog = SettingsDialog(AppSettings())
     dialog.show()
     assert dialog.device.isVisible() and not dialog.deepgram_key.isVisible()
@@ -260,7 +257,8 @@ def test_choosing_deepgram_swaps_the_local_rows_for_the_key_and_dialect(app, mon
     dialog.deepgram_key.setText("  dg-key ")
     dialog.deepgram_language.setCurrentIndex(dialog.deepgram_language.findData("ar-EG"))
     chosen = dialog.result_settings()
-    assert (chosen.model, chosen.deepgram_key, chosen.deepgram_language) == ("deepgram", "dg-key", "ar-EG")
+    assert (chosen.model, chosen.deepgram_language) == ("deepgram", "ar-EG")
+    assert dialog.key_change() == "replace"
     assert dialog.note.text() == "Saving reloads the model"
     dialog.model.setCurrentIndex(0)
     assert dialog.device.isVisible() and not dialog.deepgram_key.isVisible()
@@ -275,8 +273,9 @@ def test_the_test_button_says_whether_deepgram_takes_the_key(app, monkeypatch):
         if key != "good":
             raise deepgram.DeepgramError("Deepgram rejected the API key", fatal=True)
     monkeypatch.setattr(deepgram, "check_key", check)
-    dialog = SettingsDialog(AppSettings(model="deepgram", deepgram_key="bad"))
-    dialog.test_key.click()
+    keystore.save("bad")
+    dialog = SettingsDialog(AppSettings(model="deepgram"))
+    dialog.test_key.click()                             # an empty field tests the saved key
     assert wait_until(lambda: dialog.test_key.isEnabled(), app)
     assert dialog.key_hint.text() == "✕ Deepgram rejected the API key"
     dialog.deepgram_key.setText("good")
@@ -284,6 +283,78 @@ def test_the_test_button_says_whether_deepgram_takes_the_key(app, monkeypatch):
     assert wait_until(lambda: dialog.test_key.isEnabled(), app)
     assert dialog.key_hint.text() == "✓ Deepgram accepts this key"
     dialog.close()
+
+
+# ── The Deepgram key: in the keyring, never shown again ────────────────
+
+KEY = "0123456789abcdef0123456789abcdef0123a1b2"
+
+
+def test_a_saved_key_goes_to_the_keyring_and_never_comes_back_into_the_field(app, store):
+    from src.ui.settings import SettingsDialog
+    dialog = SettingsDialog(AppSettings(model="deepgram"))
+    assert dialog.deepgram_key.placeholderText() == "Paste your Deepgram API key"
+    assert not dialog.forget_key.isVisibleTo(dialog)
+    dialog.deepgram_key.setText(KEY)
+    dialog.accept()
+    assert dialog.key_changed and keystore.load() == KEY
+    dialog.result_settings().save(store)
+    assert KEY not in open(store.fileName()).read()
+
+    again = SettingsDialog(AppSettings(model="deepgram"))
+    assert again.deepgram_key.text() == ""               # nothing to reveal with the eye
+    assert again.deepgram_key.placeholderText() == "Saved key …a1b2"
+    assert again.key_hint.text() == "Paste a new key to replace it"
+    assert again.forget_key.isVisibleTo(again) and again.key_change() is None
+    again.accept()
+    assert not again.key_changed and keystore.load() == KEY
+
+
+def test_remove_deletes_the_key_on_save_and_cancel_keeps_it(app):
+    from src.ui.settings import SettingsDialog
+    keystore.save(KEY)
+    dialog = SettingsDialog(AppSettings(model="deepgram"))
+    dialog.forget_key.click()
+    assert dialog.key_change() == "remove" and dialog.note.text() == "Saving reloads the model"
+    assert dialog.key_hint.text() == "The saved key is removed when you save"
+    dialog.reject()
+    assert keystore.load() == KEY
+    dialog = SettingsDialog(AppSettings(model="deepgram"))
+    dialog.forget_key.click()
+    dialog.accept()
+    assert dialog.key_changed and keystore.load() == ""
+
+
+def test_a_key_the_first_version_kept_in_the_settings_file_moves_to_the_keyring(store):
+    store.setValue("settings/deepgram_key", KEY)
+    store.setValue("settings/model", "deepgram")
+    store.sync()
+    assert AppSettings.load(store).model == "deepgram"
+    assert keystore.load() == KEY and not store.contains("settings/deepgram_key")
+    assert KEY not in open(store.fileName()).read()
+
+
+def test_without_a_keyring_nothing_is_saved_and_the_dialog_says_what_to_do(app, monkeypatch, store):
+    from src.ui.settings import SettingsDialog
+    monkeypatch.setattr(keystore, "available", lambda: False)
+    with pytest.raises(keystore.KeystoreError):
+        keystore.save(KEY)
+    dialog = SettingsDialog(AppSettings(model="deepgram"))
+    assert not dialog.deepgram_key.isEnabled()
+    assert dialog.key_hint.text() == "Start the app with DEEPGRAM_API_KEY set instead"
+    # A key from the first version stays put rather than being lost.
+    store.setValue("settings/deepgram_key", KEY)
+    AppSettings.load(store)
+    assert store.value("settings/deepgram_key") == KEY
+
+
+def test_the_environments_key_wins_and_the_dialog_says_so(app, monkeypatch):
+    from src.ui.settings import SettingsDialog
+    keystore.save(KEY)
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "from-env")
+    assert keystore.key() == "from-env"
+    dialog = SettingsDialog(AppSettings(model="deepgram"))
+    assert dialog.key_hint.text() == "DEEPGRAM_API_KEY is set, and used instead"
 
 
 def test_preview_changes_only_the_look(window):

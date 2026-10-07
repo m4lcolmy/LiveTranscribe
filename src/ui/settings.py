@@ -8,8 +8,9 @@ run only; it is never written back.
 The model list is the models actually in the Hugging Face cache: the app never
 downloads anything, so offering a model that is not there would only offer an
 error. Any other CTranslate2 Whisper folder can be picked by hand. The one
-model that is not local is Deepgram, with the user's own API key; the settings
-file holds that key, so it is readable by its owner only.
+model that is not local is Deepgram, with the user's own API key. That key is
+not a setting: it lives in the system keyring (src/core/keystore.py), and the
+dialog can replace or remove it but never shows it again.
 """
 
 import json
@@ -18,7 +19,7 @@ import subprocess
 import threading
 from dataclasses import asdict, dataclass, fields
 
-from PyQt6.QtCore import QSettings, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QSettings, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QSlider, QToolButton, QVBoxLayout, QWidget,
@@ -28,6 +29,7 @@ from src.config import (
     ASR_STEP_S_CPU, ASR_STEP_S_GPU, DEEPGRAM_LANGUAGE, DEEPGRAM_MODEL_NAME, DEVICE,
     OVERLAY_FONT_MAX_PX, OVERLAY_FONT_MIN_PX, OVERLAY_FONT_PX, OVERLAY_OPACITY, WHISPER_MODEL,
 )
+from src.core import keystore
 from src.ui import icons
 from src.ui.theme import TEXT, TEXT_2, dialog_palette, dialog_stylesheet
 from src.ui.translate import LANGUAGES, MODES, default_target
@@ -54,11 +56,11 @@ class AppSettings:
     click_through: bool = False
     translate: str = "button"         # off | button | auto — Google Translate on selection
     translate_to: str = default_target()
-    deepgram_key: str = ""            # the user's own; DEEPGRAM_API_KEY in the environment wins
     deepgram_language: str = DEEPGRAM_LANGUAGE   # ar, or one of Nova-3's Arabic dialects
 
     @classmethod
     def load(cls, store: QSettings) -> "AppSettings":
+        _move_key_to_keyring(store)
         values = {}
         for f in fields(cls):
             default = f.default
@@ -76,14 +78,10 @@ class AppSettings:
         for name, value in asdict(self).items():
             store.setValue(f"settings/{name}", value)
         store.sync()
-        try:
-            os.chmod(store.fileName(), 0o600)     # it can hold the Deepgram key
-        except OSError:
-            pass
 
     # What a change needs: a new engine, a new pipeline, or just the window.
     ENGINE = ("model", "device", "precision")
-    DEEPGRAM = ("deepgram_key", "deepgram_language")    # an engine change only while in use
+    DEEPGRAM = ("deepgram_language",)       # an engine change only while Deepgram is in use
     PIPELINE = ("step_s", "sink", "arabic_only")
 
     def needs(self, other: "AppSettings") -> str:
@@ -94,6 +92,25 @@ class AppSettings:
         if any(getattr(self, k) != getattr(other, k) for k in self.PIPELINE):
             return "pipeline"
         return "window"
+
+
+def _move_key_to_keyring(store: QSettings):
+    """A key the first Deepgram version saved here, in plain text: into the keyring, out of the file.
+
+    A key already in the keyring is the newer one and is kept. If the keyring
+    will not take it, the old key stays where it was rather than being lost —
+    Deepgram shows a key only once, when it is made.
+    """
+    if not store.contains("settings/deepgram_key"):
+        return
+    old = str(store.value("settings/deepgram_key", "") or "").strip()
+    if old and not keystore.load():
+        try:
+            keystore.save(old)
+        except keystore.KeystoreError:
+            return
+    store.remove("settings/deepgram_key")
+    store.sync()
 
 
 # ── What there is to choose from ───────────────────────────────────────
@@ -116,12 +133,6 @@ DEEPGRAM_LANGUAGES = [
     ("ar-TD", "Chadian"), ("ar-MA", "Moroccan"), ("ar-DZ", "Algerian"), ("ar-TN", "Tunisian"),
     ("ar-IR", "Iranian Arabic"),
 ]
-
-
-def key_hint() -> str:
-    if os.environ.get("DEEPGRAM_API_KEY", "").strip():
-        return "DEEPGRAM_API_KEY is set, and used instead"
-    return "From console.deepgram.com → API Keys"
 
 
 def cached_models() -> list[tuple[str, str]]:
@@ -218,6 +229,11 @@ def _hint(text: str = "") -> QLabel:
 
 
 class SettingsDialog(QDialog):
+    """Returns the chosen settings; the Deepgram key, which is not one, it saves itself on Save.
+
+    `key_changed` then says whether the key was replaced or removed.
+    """
+
     # The look, as it is being chosen: the window shows it before Save.
     appearance_changed = pyqtSignal(object)
     # The Test button's answer, from its thread: (text, the key works).
@@ -263,27 +279,39 @@ class SettingsDialog(QDialog):
                                            None if cuda_usable() else self._hint_for(self.device))
         self._tip_for(self.device)
 
-        # Deepgram's rows, in place of the local model's.
-        self.deepgram_key = QLineEdit(current.deepgram_key)
+        # Deepgram's rows, in place of the local model's. The key field is
+        # write-only: it starts empty, and a saved key shows as its last four
+        # characters in the placeholder — the key itself is never read into it.
+        self.key_changed = False
+        self._remove_key = False
+        saved = keystore.load()
+        self._saved_ending = keystore.ending(saved) if saved else ""
+        del saved
+        self.deepgram_key = QLineEdit()
         self.deepgram_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.deepgram_key.setPlaceholderText("Deepgram API key")
-        self.deepgram_key.setCursorPosition(0)
         self.show_key = self.deepgram_key.addAction(icons.icon(icons.EYE, 16),
                                                     QLineEdit.ActionPosition.TrailingPosition)
         self.show_key.setCheckable(True)
-        self.show_key.setToolTip("Show the key")
+        self.show_key.setToolTip("Show what is typed here")
         self.show_key.toggled.connect(self._reveal_key)
         self.test_key = QPushButton("Test")
         self.test_key.clicked.connect(self._test_key)
+        self.forget_key = QPushButton("Remove")
+        self.forget_key.setToolTip("Remove the saved key from the system keyring")
+        self.forget_key.clicked.connect(self._forget_key)
+        for button in (self.test_key, self.forget_key):     # small: the field needs the room
+            button.setStyleSheet("padding: 5px 10px; min-width: 0;")
         key_row = QWidget()
         row = QHBoxLayout(key_row)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         row.addWidget(self.deepgram_key, 1)
         row.addWidget(self.test_key)
-        self.key_hint = _hint(key_hint())
+        row.addWidget(self.forget_key)
+        self.key_hint = _hint()
         self.key_checked.connect(self._key_checked)
         self._cloud_rows = recognition.add("API key", key_row, self.key_hint)
+        self._show_key_state()
         self.deepgram_language = self._combo([(code, name, "") for code, name in DEEPGRAM_LANGUAGES])
         self._select(self.deepgram_language, current.deepgram_language)
         self._cloud_rows += recognition.add("Dialect", self.deepgram_language)
@@ -388,6 +416,7 @@ class SettingsDialog(QDialog):
         for box in (self.arabic_only, self.click_through):
             box.toggled.connect(self._changed)
         self.deepgram_key.textChanged.connect(self._changed)
+        self.deepgram_key.textChanged.connect(self._show_key_state)
         self.model.currentIndexChanged.connect(self._show_engine_rows)
         self.font_px.valueChanged.connect(self._appearance)
         self.opacity.valueChanged.connect(self._appearance)
@@ -490,14 +519,29 @@ class SettingsDialog(QDialog):
         return self.model.currentData() == DEEPGRAM_MODEL_NAME
 
     def _show_advanced(self, on: bool):
+        middle = self.frameGeometry().center()
         self.advanced.setVisible(on and not self._cloud)
         self.advanced_toggle.setIcon(icons.icon(icons.CHEVRON_DOWN if on else icons.CHEVRON_RIGHT,
                                                 14, rest=TEXT_2, hover=TEXT))
         if self.isVisible():
-            QTimer.singleShot(0, self.adjustSize)
+            QTimer.singleShot(0, lambda: self._refit(middle))
+
+    def _refit(self, middle: QPoint):
+        """Fit to the rows now shown, about the middle it had before they
+        changed: grown down from the top edge it slips under the transcript window."""
+        self.adjustSize()
+        frame = self.frameGeometry()
+        frame.moveCenter(middle)
+        screen = self.screen()
+        if screen is not None:
+            room = screen.availableGeometry()
+            frame.moveBottom(min(frame.bottom(), room.bottom()))
+            frame.moveTop(max(frame.top(), room.top()))
+        self.move(frame.topLeft())
 
     def _show_engine_rows(self, *_):
         """Deepgram's key and dialect, or the local model's device and Advanced tuning."""
+        middle = self.frameGeometry().center()
         cloud = self._cloud
         for widget in self._cloud_rows:
             widget.setVisible(cloud)
@@ -510,24 +554,62 @@ class SettingsDialog(QDialog):
         self.arabic_only.setToolTip("Whisper only: it relies on Whisper's own language detection"
                                     if cloud else "")
         if self.isVisible():
-            QTimer.singleShot(0, self.adjustSize)
+            QTimer.singleShot(0, lambda: self._refit(middle))
+
+    # ── The key ────────────────────────────────────────────────────────
+
+    def key_change(self) -> str | None:
+        """'replace' (a key is typed), 'remove', or None."""
+        if self.deepgram_key.text().strip():
+            return "replace"
+        return "remove" if self._remove_key else None
+
+    def _show_key_state(self, *_):
+        """The placeholder says what is saved; the hint, what to do about it."""
+        saved = bool(self._saved_ending) and not self._remove_key
+        self.forget_key.setVisible(saved)
+        if not keystore.available():
+            self.deepgram_key.setEnabled(False)
+            self.deepgram_key.setPlaceholderText("No system keyring")
+            hint = "Start the app with DEEPGRAM_API_KEY set instead"
+        elif saved:
+            self.deepgram_key.setPlaceholderText(f"Saved key {self._saved_ending}")
+            hint = "Paste a new key to replace it"
+        else:
+            self.deepgram_key.setPlaceholderText("Paste your Deepgram API key")
+            hint = ("The saved key is removed when you save" if self._remove_key
+                    else "From console.deepgram.com → API Keys")
+        if keystore.from_environment():
+            hint = "DEEPGRAM_API_KEY is set, and used instead"
+        if self.deepgram_key.text().strip():
+            hint = "Saved in the system keyring when you save"
+        self.key_hint.setText(hint)
+
+    def _forget_key(self):
+        self._remove_key = True
+        self.deepgram_key.clear()
+        self._show_key_state()
+        self._changed()
 
     def _reveal_key(self, shown: bool):
         self.deepgram_key.setEchoMode(QLineEdit.EchoMode.Normal if shown
                                       else QLineEdit.EchoMode.Password)
         self.show_key.setIcon(icons.icon(icons.EYE_OFF if shown else icons.EYE, 16))
-        self.show_key.setToolTip("Hide the key" if shown else "Show the key")
+        self.show_key.setToolTip("Hide what is typed here" if shown else "Show what is typed here")
 
     def _test_key(self):
+        """The typed key, else the one in use — read in the thread, never shown."""
         from src.audio.deepgram import DeepgramError, check_key
-        key = self.deepgram_key.text().strip()
+        typed = self.deepgram_key.text().strip()
+        removed = self._remove_key
         self.test_key.setEnabled(False)
         self.key_hint.setText("Asking Deepgram…")
 
         def ask():
+            key = typed or (keystore.from_environment() if removed else keystore.key())
             try:
                 check_key(key)
-                answer = ("✓ Deepgram accepts this key", True)
+                answer = (f"✓ Deepgram accepts {'this' if typed else 'the saved'} key", True)
             except DeepgramError as e:
                 answer = (f"✕ {e}", False)
             try:
@@ -540,10 +622,27 @@ class SettingsDialog(QDialog):
         self.key_hint.setText(text)
         self.test_key.setEnabled(True)
 
+    def accept(self):
+        """Save or remove the key first; if the keyring refuses, say so and stay open."""
+        change = self.key_change()
+        try:
+            if change == "replace":
+                keystore.save(self.deepgram_key.text())
+            elif change == "remove":
+                keystore.remove()
+        except keystore.KeystoreError as e:
+            self.key_hint.setText(f"✕ {e}")
+            return
+        self.key_changed = change is not None
+        self.deepgram_key.clear()
+        super().accept()
+
     # ── Changes ────────────────────────────────────────────────────────
 
     def _changed(self, *_):
         needs = self._current.needs(self.result_settings())
+        if self._cloud and self.key_change() is not None:
+            needs = "engine"
         self.note.setText({"engine": "Saving reloads the model",
                            "pipeline": "Saving restarts listening"}.get(needs, ""))
 
@@ -576,6 +675,5 @@ class SettingsDialog(QDialog):
             click_through=self.click_through.isChecked(),
             translate=self.translate.currentData(),
             translate_to=self.translate_to.currentData(),
-            deepgram_key=self.deepgram_key.text().strip(),
             deepgram_language=self.deepgram_language.currentData(),
         )

@@ -54,6 +54,13 @@ if [ "$MODE" != install ]; then
     bold "Removing LiveTranscribe"
     remove_entry
     if [ "$MODE" = purge ]; then
+        # The Deepgram key is in the system keyring, not in the settings file.
+        for py in "$APP_DIR/.venv/bin/python" python3; do
+            if "$py" -c "import keyring; keyring.delete_password('LiveTranscribe', 'deepgram')" 2>/dev/null; then
+                ok "removed the Deepgram API key from the keyring"
+                break
+            fi
+        done
         rm -rf "$APP_DIR/.venv" "$SETTINGS"
         ok "removed .venv and saved settings ($SETTINGS)"
         echo "  The Whisper model stays in ~/.cache/huggingface (other apps may use it)."

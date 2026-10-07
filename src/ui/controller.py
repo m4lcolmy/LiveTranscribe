@@ -176,6 +176,8 @@ class Controller(QObject):
             return
         new = dialog.result_settings()
         needs = shown.needs(new)
+        if dialog.key_changed and new.model == DEEPGRAM_MODEL_NAME:
+            needs = "engine"                # the key was replaced or removed
         self.prefs = new
         new.save(self.store)
         # From now on the saved settings rule; the command line applied to the start only.
@@ -189,7 +191,8 @@ class Controller(QObject):
         self.click_action.blockSignals(False)
         if needs == "engine":
             if new.model == DEEPGRAM_MODEL_NAME:
-                self.window.add_note(f"Switched to Deepgram · {new.deepgram_language}")
+                what = "Switched to Deepgram" if shown.model != new.model else "Deepgram restarted"
+                self.window.add_note(f"{what} · {new.deepgram_language}")
             else:
                 chosen = [v for v in (new.device, new.precision) if v != "auto"]
                 self.window.add_note(" · ".join([f"Switched to {new.model}", *chosen]))
