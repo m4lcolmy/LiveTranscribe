@@ -30,8 +30,10 @@ from PyQt6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import QApplication, QDialog, QMenu, QSystemTrayIcon
 
 from src.config import DEEPGRAM_MODEL_NAME
+from src.core import models, nllb
 from src.core.debug import log
 from src.session import effective_args, loading_text, make_engine, make_streamer
+from src.ui.downloads import downloads
 from src.ui.overlay import TranscriptWindow
 from src.ui.settings import AppSettings, SettingsDialog, open_store
 from src.ui.theme import polish_menu
@@ -86,6 +88,7 @@ class Controller(QObject):
             self.prefs.click_through = False      # nothing would be left to click
 
         self.window = TranscriptWindow(self.store, bypass_wm=cli.bypass_wm)
+        nllb.set_device(self.args.device)
         self.window.apply_settings(self.prefs)
         self.sink = OverlaySink()
         self.sink.updated.connect(self.window.show_update)
@@ -95,6 +98,7 @@ class Controller(QObject):
         self.window.pause_clicked.connect(self.toggle_pause)
         self.window.settings_clicked.connect(self.open_settings)
         self.window.quit_clicked.connect(self.quit)
+        downloads().finished.connect(self._downloaded)
 
         self.menu = self._build_menu()
         if self.tray is not None:
@@ -152,10 +156,18 @@ class Controller(QObject):
         self.prefs.save(self.store)
         self.window.set_click_through(on)
 
-    def _translation_chosen(self, mode: str, target: str):
+    def _translation_chosen(self, mode: str, target: str, engine: str):
         """Chosen in the transcript's right-click menu: saved like any setting."""
         self.prefs.translate, self.prefs.translate_to = mode, target
+        self.prefs.translate_with = engine
         self.prefs.save(self.store)
+
+    def _downloaded(self, name: str, error: str):
+        """A download started in the settings ended — perhaps after they were closed."""
+        model = models.find(name)
+        what = "The offline translation model" if model is models.NLLB else f"The {name} model"
+        self.window.add_note(f"{what} could not be downloaded: {error}" if error
+                             else f"{what} is downloaded and ready to use")
 
     # ── Settings ───────────────────────────────────────────────────────
 
@@ -185,6 +197,7 @@ class Controller(QObject):
             setattr(self.cli, flag, None)
         self.args = effective_args(self.cli, new)
 
+        nllb.set_device(self.args.device)
         self.window.apply_settings(new)
         self.click_action.blockSignals(True)
         self.click_action.setChecked(new.click_through)

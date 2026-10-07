@@ -183,6 +183,9 @@ def dialog_stylesheet() -> str:
     QPushButton:hover {{ background: {rgba(FIELD_HOVER)}; }}
     QPushButton[primary="true"] {{ background: {rgba(ACCENT)}; border-color: {rgba(ACCENT)}; }}
     QPushButton[primary="true"]:hover {{ background: {rgba(ACCENT_HOVER)}; }}
+    QPushButton:disabled, QPushButton[primary="true"]:disabled {{
+        background: {rgba(FIELD)}; border-color: {rgba(LINE)}; color: {rgba(TEXT_3)};
+    }}
 
     QToolButton#disclosure {{
         color: {rgba(TEXT)}; font-size: {UI_PX}px; font-weight: 600;

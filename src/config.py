@@ -16,8 +16,9 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 LOG_KEEP = 20
 
 # ── Model ──────────────────────────────────────────────────────────────
-# A faster-whisper size name, resolved from the Hugging Face cache (the app
-# never downloads), or a path to a CTranslate2 model directory.
+# A faster-whisper size name, resolved from the Hugging Face cache, or a path
+# to a CTranslate2 model directory. install.sh fetches this one; any other is
+# downloaded only when the user asks for it in the settings (src/core/models.py).
 #
 # hifz measured a small model degrading badly on 3-second windows. That is
 # why the streamer below hands Whisper everything since the last commit
@@ -265,6 +266,35 @@ DEEPGRAM_FINALIZE_WAIT_S = 2.0
 # DEEPGRAM_RESEND_MAX_S of it), and words already final are not repeated.
 DEEPGRAM_RETRY_BACKOFF_S = (0.5, 1.0, 2.0, 5.0)
 DEEPGRAM_RESEND_MAX_S = 30.0
+
+# ── Translation ────────────────────────────────────────────────────────
+# Selected text, translated by Google (online) or by NLLB-200 on this machine
+# (src/ui/translate.py, src/core/nllb.py).
+#
+# Google's free endpoints are unofficial and limited per network: past the
+# limit they answer with a "Sorry…" page. Asking again while refused can keep
+# the block in place, so after a refusal nothing is sent for the next wait;
+# each refusal in a row waits longer, a success starts over.
+TRANSLATE_COOLDOWN_S = (120, 300, 900)
+TRANSLATE_TIMEOUT_S = 8.0
+# Answers kept per (engine, language, text): selecting the same text again —
+# or clicking inside a selection, which "as soon as selected" used to send
+# again — costs no request.
+TRANSLATE_CACHE_SIZE = 200
+# "As soon as selected" waits this long after the mouse is let go: a
+# double-click (a word) that becomes a triple-click (a line) is one request.
+TRANSLATE_AUTO_DELAY_MS = 350
+# Meta's NLLB-200, distilled to 600M parameters, converted to CTranslate2 int8:
+# one model from Arabic into every language offered, 0.64 GB. Measured on the
+# RTX 3050 Ti, 2026-10-07: 0.5 s to load, 0.15–0.35 s a sentence on the GPU
+# (int8_float16), ~1 s on the CPU (int8). Licence CC-BY-NC-4.0.
+NLLB_REPO = "JustFrederik/nllb-200-distilled-600M-ct2-int8"
+NLLB_SOURCE = "arb_Arab"            # Modern Standard Arabic
+NLLB_BEAM = 4
+# NLLB learned from single sentences: given several at once it drops all but
+# the first (it did, into Turkish and Chinese). Text is cut into sentences,
+# and a sentence longer than this many tokens into pieces of it.
+NLLB_MAX_TOKENS = 160
 
 # ── Overlay (step 2) ───────────────────────────────────────────────────
 # GNOME on Wayland lets no app place its own window or keep it on top ("by

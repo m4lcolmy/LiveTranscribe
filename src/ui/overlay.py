@@ -41,7 +41,7 @@ from PyQt6.QtWidgets import (
 
 from src.config import (
     OVERLAY_BOTTOM_MARGIN, OVERLAY_FONTS, OVERLAY_HEIGHT_PX, OVERLAY_HISTORY_LINES,
-    OVERLAY_MAX_WIDTH_PX, OVERLAY_RAISE_EVERY_MS, OVERLAY_WIDTH_FRACTION,
+    OVERLAY_MAX_WIDTH_PX, OVERLAY_RAISE_EVERY_MS, OVERLAY_WIDTH_FRACTION, TRANSLATE_AUTO_DELAY_MS,
 )
 from src.ui import icons
 from src.ui.theme import (
@@ -49,7 +49,7 @@ from src.ui.theme import (
     RADIUS_CONTROL, RAISED, SELECTION, SMALL_PX, SURFACE, TENTATIVE, TEXT, TEXT_2, TEXT_3,
     icon_button_stylesheet, polish_menu, qcolor, rgba,
 )
-from src.ui.translate import LANGUAGES, MODES, TranslatePopup, Translator
+from src.ui.translate import ENGINE_SOURCE, ENGINES, LANGUAGES, MODES, TranslatePopup, Translator
 
 FADE_MS = 160            # controls fading in and out
 HIDE_AFTER_MS = 600      # the mouse gone this long before they fade
@@ -65,12 +65,12 @@ class TranscriptView(QTextEdit):
     transcript nobody can type into reads as a bug (it did, 2026-09-26).
     Ctrl+C still copies — Qt handles Copy before it asks about the caret.
 
-    Selected text can go to Google Translate: a button beside the selection,
-    or at once, as the user chose (translation_changed carries a menu choice
-    back to the settings).
+    Selected text can be translated — by Google, or offline — through a
+    button beside the selection, or at once, as the user chose
+    (translation_changed carries a menu choice back to the settings).
     """
 
-    translation_changed = pyqtSignal(str, str)      # mode, target language
+    translation_changed = pyqtSignal(str, str, str)      # mode, target language, engine
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -142,7 +142,15 @@ class TranscriptView(QTextEdit):
 
         self.translate_mode = "button"
         self.translate_to = "en"
+        self.translate_with = "google"
         self.translator = Translator(self)
+        # "As soon as selected" waits for the mouse to settle: a double-click
+        # that turns into a triple-click is one translation, not two.
+        self._auto_later = QTimer(self)
+        self._auto_later.setSingleShot(True)
+        self._auto_later.setInterval(TRANSLATE_AUTO_DELAY_MS)
+        self._auto_later.timeout.connect(self._auto_translate)
+        self._shown_text = ""          # what the popup is showing a translation of
         self.translator.finished.connect(self._translated)
         self.popup: TranslatePopup | None = None
         self.translate_button = QToolButton(self.viewport())
@@ -150,7 +158,6 @@ class TranscriptView(QTextEdit):
         self.translate_button.setIconSize(QSize(16, 16))
         self.translate_button.setFixedSize(28, 26)
         self.translate_button.setAutoRaise(True)
-        self.translate_button.setToolTip("Translate the selection with Google Translate")
         self.translate_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.translate_button.setStyleSheet(
             f"QToolButton {{ background: {rgba(RAISED)}; border: 1px solid {rgba(LINE)};"
@@ -258,8 +265,16 @@ class TranscriptView(QTextEdit):
         # Qt separates paragraphs in a selection with U+2029.
         return self.textCursor().selectedText().replace("\u2029", "\n").strip()
 
-    def set_translation(self, mode: str, target: str):
+    def set_translation(self, mode: str, target: str, engine: str | None = None):
+        if engine is not None and engine != self.translate_with:
+            if self.translate_with == "offline":
+                from src.core import nllb
+                nllb.unload()           # 0.7 GB nobody is using now
+            self.translate_with = engine
         self.translate_mode, self.translate_to = mode, target
+        self.translate_button.setToolTip(
+            f"Translate the selection — {ENGINE_SOURCE.get(self.translate_with, '')}")
+        self._shown_text = ""
         self._selection_changed()
 
     def _selection_rect(self):
@@ -285,6 +300,13 @@ class TranscriptView(QTextEdit):
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
         if self.translate_mode == "auto" and self.selected_text():
+            self._auto_later.start()
+
+    def _auto_translate(self):
+        """Only a selection not already on show: a click inside it changes nothing."""
+        text = self.selected_text()
+        if text and not (text == self._shown_text and self.popup is not None
+                         and self.popup.isVisible()):
             self.translate_selection()
 
     def translate_selection(self):
@@ -294,12 +316,19 @@ class TranscriptView(QTextEdit):
         self.translate_button.hide()
         if self.popup is None:
             self.popup = TranslatePopup()
-        self.popup.set_waiting(dict(LANGUAGES).get(self.translate_to, self.translate_to))
+        note = "Translating…"
+        if self.translate_with == "offline":
+            from src.core import nllb
+            if not nllb.loaded():
+                note = "Loading the offline translation model…"
+        self.popup.set_waiting(dict(LANGUAGES).get(self.translate_to, self.translate_to),
+                               self.translate_with, note)
         # Above the transcript window, over the selection.
         window = self.window()
         x = self.viewport().mapTo(window, self._selection_rect().center()).x()
         self.popup.show_near(window.mapToGlobal(QPoint(x, 0)), window.width())
-        self.translator.request(text, self.translate_to)
+        self._shown_text = text
+        self.translator.request(text, self.translate_to, self.translate_with)
 
     def _translated(self, _token: int, text: str, error: str):
         if self.popup is None:
@@ -332,20 +361,35 @@ class TranscriptView(QTextEdit):
             now.setEnabled(bool(self.selected_text()))
             now.triggered.connect(self.translate_selection)
             menu.addAction(now)
-        google = menu.addMenu("Google Translate")
-        modes = QActionGroup(google)
+        options = menu.addMenu("Translation")
+        modes = QActionGroup(options)
         for value, label in MODES:
-            a = QAction(label, google, checkable=True)
+            a = QAction(label, options, checkable=True)
             a.setChecked(value == self.translate_mode)
-            a.triggered.connect(lambda _=False, v=value: self._choose(v, self.translate_to))
+            a.triggered.connect(lambda _=False, v=value: self._choose(v, self.translate_to,
+                                                                      self.translate_with))
             modes.addAction(a)
-            google.addAction(a)
-        into = google.addMenu("Translate into")
+            options.addAction(a)
+        options.addSeparator()
+        from src.core import nllb
+        engines = QActionGroup(options)
+        for value, label, _hint in ENGINES:
+            ready = value != "offline" or nllb.available()
+            a = QAction(label if ready else f"{label} — download it in Settings", options,
+                        checkable=True)
+            a.setChecked(value == self.translate_with)
+            a.setEnabled(ready or value == self.translate_with)
+            a.triggered.connect(lambda _=False, e=value: self._choose(self.translate_mode,
+                                                                      self.translate_to, e))
+            engines.addAction(a)
+            options.addAction(a)
+        into = options.addMenu("Translate into")
         targets = QActionGroup(into)
         for code, name in LANGUAGES:
             a = QAction(name, into, checkable=True)
             a.setChecked(code == self.translate_to)
-            a.triggered.connect(lambda _=False, c=code: self._choose(self.translate_mode, c))
+            a.triggered.connect(lambda _=False, c=code: self._choose(self.translate_mode, c,
+                                                                     self.translate_with))
             targets.addAction(a)
             into.addAction(a)
 
@@ -356,9 +400,9 @@ class TranscriptView(QTextEdit):
                 menu.addAction(action)
         return polish_menu(menu)
 
-    def _choose(self, mode: str, target: str):
-        self.set_translation(mode, target)
-        self.translation_changed.emit(mode, target)
+    def _choose(self, mode: str, target: str, engine: str):
+        self.set_translation(mode, target, engine)
+        self.translation_changed.emit(mode, target, engine)
 
     def contextMenuEvent(self, event):
         self.build_context_menu().exec(event.globalPos())
@@ -600,7 +644,7 @@ class TranscriptWindow(QWidget):
 
     def apply_settings(self, prefs):
         self.preview(prefs)
-        self.view.set_translation(prefs.translate, prefs.translate_to)
+        self.view.set_translation(prefs.translate, prefs.translate_to, prefs.translate_with)
         if self._click_through != prefs.click_through:
             self.set_click_through(prefs.click_through)
 

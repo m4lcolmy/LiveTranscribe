@@ -1,23 +1,35 @@
-"""Translate a selection of the transcript with Google Translate's free endpoint.
+"""Translate a selection of the transcript: with Google Translate, or offline.
 
-This is the one thing in LiveTranscribe that leaves the machine, so it is
+Google is the one thing in LiveTranscribe that leaves the machine, so it is
 narrow on purpose: only the text the user selected, and only when they ask —
 by clicking the translate button, or by having chosen "translate as soon as
-text is selected" themselves. Transcription stays offline either way.
+text is selected" themselves. Offline translation (src/core/nllb.py) sends
+nothing anywhere; transcription stays offline either way.
 
-The endpoint (translate.googleapis.com/translate_a/single, client=gtx) is the
-unofficial one the web widget uses: no key, no account, no guarantee. Google
+Google's free endpoints — translate_a/single with client=gtx, which the web
+widget uses, and translate_a/t with client=dict-chrome-ex, which the Chrome
+extension uses — are unofficial: no key, no account, no guarantee. Google
 answers too many requests from one network with a "Sorry…" page instead of
-JSON (seen 2026-09-26, after the corpus fetch had leaned on YouTube), and that
-is reported as what it is rather than as a broken translation.
+JSON (seen 2026-09-26, after the corpus fetch had leaned on YouTube, and
+often since). So:
+
+  * an answer is kept (TRANSLATE_CACHE_SIZE), and the same text again is
+    shown from it without asking;
+  * a refused endpoint hands over to the other, which is often still open,
+    and the one that answered is asked first from then on;
+  * when both refuse, nothing is sent for TRANSLATE_COOLDOWN_S — asking
+    while refused can keep the block in place — and the popup says how long
+    is left, and that offline translation is in the settings.
 """
 
 import json
 import math
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 
 from PyQt6.QtCore import QObject, QPoint, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QGuiApplication, QPainter, QTextCharFormat, QTextCursor
@@ -25,6 +37,7 @@ from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QTextBrowser, QToolButton, QVBoxLayout,
 )
 
+from src.config import TRANSLATE_CACHE_SIZE, TRANSLATE_COOLDOWN_S, TRANSLATE_TIMEOUT_S
 from src.ui import icons
 from src.ui.theme import (
     LINE, RADIUS, RAISED, SELECTION, SMALL_PX, TEXT, TEXT_2, TEXT_3,
@@ -32,12 +45,16 @@ from src.ui.theme import (
 )
 
 ENDPOINT = "https://translate.googleapis.com/translate_a/single"
+FALLBACK = "https://clients5.google.com/translate_a/t"
 MAX_CHARS = 4500            # Google refuses much more than ~5000 characters at once
-TIMEOUT_S = 8.0
+TIMEOUT_S = TRANSLATE_TIMEOUT_S
 
 MODES = [("off", "Off"),
          ("button", "Show a translate button on selected text"),
          ("auto", "Translate as soon as text is selected")]
+ENGINES = [("google", "Google Translate", "Online: only the text you select is sent to Google"),
+           ("offline", "Offline (NLLB-200)", "On this computer: nothing is sent anywhere")]
+ENGINE_SOURCE = {"google": "Google Translate", "offline": "Offline · NLLB-200"}
 
 LANGUAGES = [("en", "English"), ("tr", "Türkçe"), ("fr", "Français"), ("de", "Deutsch"),
              ("es", "Español"), ("it", "Italiano"), ("ru", "Русский"), ("fa", "فارسی"),
@@ -53,6 +70,10 @@ class TranslationError(Exception):
     """Something to show the user, in words they can act on."""
 
 
+class RateLimited(TranslationError):
+    """Google said no: the "Sorry…" page, or HTTP 429."""
+
+
 def default_target() -> str:
     """The system's language when there is a translation into it; else English."""
     from PyQt6.QtCore import QLocale
@@ -60,10 +81,12 @@ def default_target() -> str:
     return code if code != "ar" and code in {c for c, _ in LANGUAGES} else "en"
 
 
+# ── Google ─────────────────────────────────────────────────────────────
+
 def parse(body: str) -> str:
-    """The translated text out of the endpoint's nested-list JSON."""
+    """The translated text out of translate_a/single's nested-list JSON."""
     if body.lstrip().startswith("<"):
-        raise TranslationError(RATE_LIMITED)      # the "Sorry…" page, not JSON
+        raise RateLimited(RATE_LIMITED)           # the "Sorry…" page, not JSON
     try:
         data = json.loads(body)
         return "".join(part[0] for part in data[0] if part and part[0]).strip()
@@ -71,52 +94,170 @@ def parse(body: str) -> str:
         raise TranslationError(f"Google Translate answered in an unexpected form ({e})")
 
 
-def translate(text: str, target: str, source: str = "auto", timeout: float = TIMEOUT_S) -> str:
-    text = text.strip()[:MAX_CHARS]
-    if not text:
-        return ""
-    query = urllib.parse.urlencode({"client": "gtx", "sl": source, "tl": target, "dt": "t"})
+def parse_fallback(body: str) -> str:
+    """translate_a/t's answer: [[text, detected language]] with sl=auto, [text] without."""
+    if body.lstrip().startswith("<"):
+        raise RateLimited(RATE_LIMITED)
+    try:
+        first = json.loads(body)[0]
+        return (first[0] if isinstance(first, list) else first).strip()
+    except (ValueError, TypeError, IndexError, AttributeError) as e:
+        raise TranslationError(f"Google Translate answered in an unexpected form ({e})")
+
+
+def _post(url: str, params: dict, text: str, timeout: float) -> str:
     request = urllib.request.Request(
-        f"{ENDPOINT}?{query}",
+        f"{url}?{urllib.parse.urlencode(params)}",
         data=urllib.parse.urlencode({"q": text}).encode("utf-8"),
         headers={"User-Agent": "Mozilla/5.0",
                  "Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8", errors="replace")
+            return response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
-        if e.code == 429:
-            raise TranslationError(RATE_LIMITED)
+        if e.code in (429, 503):           # 503 comes with the "Sorry…" page too
+            raise RateLimited(RATE_LIMITED)
         raise TranslationError(f"Google Translate answered HTTP {e.code}")
     except (urllib.error.URLError, TimeoutError, OSError):
         raise TranslationError("Could not reach Google Translate — is this computer online?")
-    return parse(body)
+
+
+def _single(text: str, target: str, source: str, timeout: float) -> str:
+    return parse(_post(ENDPOINT, {"client": "gtx", "sl": source, "tl": target, "dt": "t"},
+                       text, timeout))
+
+
+def _extension(text: str, target: str, source: str, timeout: float) -> str:
+    return parse_fallback(_post(FALLBACK, {"client": "dict-chrome-ex", "sl": source,
+                                           "tl": target}, text, timeout))
+
+
+class _Google:
+    """Which endpoint to ask first, and until when to ask none."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.endpoints = [_single, _extension]
+        self.until = 0.0            # time.monotonic() before which nothing is sent
+        self.refusals = 0           # in a row, both endpoints
+
+    def wait_left(self) -> float:
+        return max(0.0, self.until - time.monotonic())
+
+    def reset(self):
+        with self.lock:
+            self.endpoints = [_single, _extension]
+            self.until, self.refusals = 0.0, 0
+
+
+_google = _Google()
+
+
+def wait_text(seconds: float) -> str:
+    seconds = math.ceil(seconds)
+    if seconds >= 90:
+        return f"{math.ceil(seconds / 60)} min"
+    return f"{seconds} s"
+
+
+def _refused_message(seconds: float) -> str:
+    return (f"Google is refusing requests from this network for now (too many requests). "
+            f"Trying again is possible in {wait_text(seconds)} — or switch Translation "
+            f"to Offline in the settings.")
+
+
+def google(text: str, target: str, source: str = "auto", timeout: float = TIMEOUT_S) -> str:
+    left = _google.wait_left()
+    if left > 0:
+        raise RateLimited(_refused_message(left))
+    with _google.lock:
+        order = list(_google.endpoints)
+    for endpoint in order:
+        try:
+            result = endpoint(text, target, source, timeout)
+        except RateLimited:
+            continue
+        with _google.lock:
+            if order[0] is not endpoint:                # this one is open: ask it first
+                _google.endpoints = [endpoint] + [e for e in _google.endpoints if e is not endpoint]
+            _google.refusals = 0
+        return result
+    with _google.lock:
+        wait = TRANSLATE_COOLDOWN_S[min(_google.refusals, len(TRANSLATE_COOLDOWN_S) - 1)]
+        _google.refusals += 1
+        _google.until = time.monotonic() + wait
+    raise RateLimited(_refused_message(wait))
+
+
+# ── Either ─────────────────────────────────────────────────────────────
+
+def translate(text: str, target: str, engine: str = "google", source: str = "auto",
+              timeout: float = TIMEOUT_S) -> str:
+    text = text.strip()[:MAX_CHARS]
+    if not text:
+        return ""
+    if engine == "offline":
+        from src.core import nllb
+        try:
+            return nllb.translate(text, target)
+        except nllb.OfflineError as e:
+            raise TranslationError(str(e))
+    return google(text, target, source, timeout)
 
 
 class Translator(QObject):
-    """Runs translate() off the GUI thread; only the newest request's answer is delivered."""
+    """Runs translate() off the GUI thread; only the newest request's answer is delivered.
+
+    Answers are kept per (engine, language, text): asked again, they come back
+    at once, from here, without a thread or a request.
+    """
 
     finished = pyqtSignal(int, str, str)       # token, translation, error
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._latest = 0
+        self._cache: OrderedDict[tuple[str, str, str], str] = OrderedDict()
+        self._lock = threading.Lock()
 
-    def request(self, text: str, target: str) -> int:
+    def cached(self, text: str, target: str, engine: str) -> str | None:
+        key = (engine, target, text.strip())
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
+        return None
+
+    def _keep(self, text: str, target: str, engine: str, result: str):
+        with self._lock:
+            self._cache[(engine, target, text.strip())] = result
+            while len(self._cache) > TRANSLATE_CACHE_SIZE:
+                self._cache.popitem(last=False)
+
+    def request(self, text: str, target: str, engine: str = "google") -> int:
         self._latest += 1
         token = self._latest
-        threading.Thread(target=self._run, args=(token, text, target),
+        hit = self.cached(text, target, engine)
+        if hit is not None:
+            self.finished.emit(token, hit, "")
+            return token
+        threading.Thread(target=self._run, args=(token, text, target, engine),
                          name="translate", daemon=True).start()
         return token
 
-    def _run(self, token: int, text: str, target: str):
-        try:
-            result, error = translate(text, target), ""
-        except TranslationError as e:
-            result, error = "", str(e)
+    def _deliver(self, token: int, result: str, error: str):
         if token == self._latest:
             self.finished.emit(token, result, error)
+
+    def _run(self, token: int, text: str, target: str, engine: str):
+        try:
+            result, error = translate(text, target, engine=engine), ""
+            if result:
+                self._keep(text, target, engine, result)
+        except TranslationError as e:
+            result, error = "", str(e)
+        self._deliver(token, result, error)
 
 
 # ── The popup that shows a translation ─────────────────────────────────
@@ -236,11 +377,12 @@ class TranslatePopup(QFrame):
             cursor.mergeCharFormat(fmt)
         self._fit()
 
-    def set_waiting(self, target_name: str):
+    def set_waiting(self, target_name: str, engine: str = "google", note: str = "Translating…"):
         self._title_text = f"Arabic to {target_name}"
         self._restore_title.stop()
         self.title.setText(self._title_text)
-        self._set_text("Translating…", TEXT_3)
+        self.source.setText(ENGINE_SOURCE.get(engine, ENGINE_SOURCE["google"]))
+        self._set_text(note, TEXT_3)
         self.copy_button.setEnabled(False)
 
     def set_result(self, text: str, target: str):

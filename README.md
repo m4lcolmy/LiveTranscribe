@@ -23,7 +23,8 @@ nothing you listen to is sent anywhere. If you prefer, it can use
   back down and it follows the speech.
 - **Select and copy.** Select text with the mouse, then press Ctrl+C.
 - **Translate.** Select some text and click the translate button that appears
-  beside it. The translation opens above the window, from Google Translate.
+  beside it. The translation opens above the window — from Google Translate,
+  or offline, on your own computer.
 - **Stays out of the way.** Always on top, on every workspace. Move it
   anywhere, make it bigger or smaller — it remembers.
 
@@ -74,7 +75,7 @@ mouse leaves.
 | **✕** | Quit |
 | **Move** | Drag the top bar |
 | **Resize** | Drag the bottom-right corner |
-| **Right-click the text** | Copy · Select all · Copy whole transcript · Clear window · Translate selection · Google Translate options |
+| **Right-click the text** | Copy · Select all · Copy whole transcript · Clear window · Translate selection · Translation options |
 
 A text file of everything said is also kept for each session: right-click the
 tray icon (top bar of the screen) → **Open transcript file**.
@@ -84,17 +85,28 @@ tray icon (top bar of the screen) → **Open transcript file**.
 When you select text, a small translate button appears beside it.
 Click it and the translation opens above the window, with a copy button.
 
-Right-click the text → **Google Translate** to choose how it works:
+Right-click the text → **Translation** to choose how it works:
 
 - **Off**
 - **Show a translate button on selected text** (the default)
 - **Translate as soon as text is selected**
 
-…and which language to translate into. Your choice is remembered.
+…what translates — **Google Translate** or **Offline (NLLB-200)** — and which
+language to translate into. Your choice is remembered.
 
-> Translation is the only thing that uses the internet: only the text you
-> select is sent to Google Translate. If Google is busy it may refuse for a
-> while — the popup will say so.
+**Google Translate** is the default and needs the internet: only the text
+you select is sent to Google. It is free and unofficial, and Google sometimes
+refuses a network that has asked too often. The app then waits a few minutes
+before asking again (asking while refused can make it last longer), and the
+popup says how long. Text you have already translated is shown again without
+asking.
+
+**Offline** translates on your computer with Meta's NLLB-200 model; nothing
+is sent anywhere and nothing can be refused. Choose it in **⚙ → Translation
+→ With**, then click **Download** (640 MB, once). It takes a second or two
+the first time, then well under a second a sentence on a graphics card. Google
+is usually a little more fluent. NLLB-200 is licensed for non-commercial use
+only (CC-BY-NC 4.0).
 
 ## Deepgram (cloud)
 
@@ -139,8 +151,13 @@ starts. Text size and background change in the window as you drag them;
 listening restarted, the dialog says so beside **Save**.
 
 - **Recognition**
-  - **Model** — `small` is fast and the default. `large-v3` is more accurate
-    but several times slower (download it with any Whisper tool first).
+  - **Model** — `small` is fast and the default, and the installer downloads
+    it. `large-v3` is more accurate but several times slower; `large-v3-turbo`
+    comes close to it at a fraction of the cost. A model that is not on your
+    computer yet shows its size: choose it and click **Download** under it. A
+    progress bar shows how far it got, and **Cancel** stops it. It keeps going
+    if you close the settings, and the window says when it is done. **Save**
+    waits until the chosen model is there.
     **Deepgram (cloud)** sends the speech to Deepgram instead; see
     [Deepgram (cloud)](#deepgram-cloud).
   - **Run on** — the graphics card (GPU) or the processor (CPU).
@@ -153,8 +170,9 @@ listening restarted, the dialog says so beside **Save**.
   - **Text size**, **Background** opacity.
   - **Show words that may still change** — turn off to see only final words.
   - **Click-through** — see above.
-- **Translation** — **Translate** (off, a button, or at once) and **Into**
-  which language; see above.
+- **Translation** — **Translate** (off, a button, or at once), **With**
+  (Google Translate, or Offline, which downloads the same way as a model) and
+  **Into** which language; see [Translation](#translation).
 - **Advanced** (click to open) — **Precision**, and **Update every**: how
   often the text is refreshed. Whisper only.
 
@@ -196,8 +214,9 @@ loud music are harder. The `large-v3` model is more accurate, but slower.
 ## Privacy
 
 With a Whisper model, speech recognition runs entirely on your computer and
-audio never leaves it; the only exception is translation, and only for text
-you select.
+audio never leaves it; the only exception is translation with Google, and
+only for text you select. Offline translation sends nothing. Downloading a
+model in the settings connects to Hugging Face, only when you click Download.
 
 With **Deepgram**, the speech you play is sent to Deepgram while it is
 playing (silence and music are not), under your Deepgram account and

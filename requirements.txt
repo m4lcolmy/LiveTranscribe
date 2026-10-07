@@ -5,7 +5,9 @@
 #
 # Also needed, from the system: PipeWire's pw-record and pw-metadata
 # (pipewire-bin), and the Whisper model in the Hugging Face cache
-# (Systran/faster-whisper-small). The app never downloads anything.
+# (Systran/faster-whisper-small, fetched by install.sh). Other models — larger
+# Whisper ones, the offline translator — download only when the Download
+# button in the settings is clicked.
 
 # ── Interface ──────────────────────────────────────────────────────────
 PyQt6>=6.11.0                 # the subtitle overlay and its tray icon

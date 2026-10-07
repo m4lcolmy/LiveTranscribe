@@ -63,7 +63,7 @@ if [ "$MODE" != install ]; then
         done
         rm -rf "$APP_DIR/.venv" "$SETTINGS"
         ok "removed .venv and saved settings ($SETTINGS)"
-        echo "  The Whisper model stays in ~/.cache/huggingface (other apps may use it)."
+        echo "  Downloaded models stay in ~/.cache/huggingface (other apps may use them)."
     fi
     echo "  The program folder itself is left where it is: $APP_DIR"
     exit 0
@@ -169,7 +169,7 @@ PYEOF
 then
     ok "$MODEL_REPO is already downloaded"
 else
-    echo "  LiveTranscribe never downloads anything while it runs; the model is fetched now, once."
+    echo "  This is the default model, fetched now, once. Others can be downloaded later in ⚙ Settings."
     echo "  (Only using Deepgram, in the cloud? Then this can be skipped.)"
     if ask "Download $MODEL_REPO (~480 MB)?"; then
         "$PY" -c "from huggingface_hub import snapshot_download; snapshot_download('$MODEL_REPO')"

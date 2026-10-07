@@ -14,6 +14,8 @@ import sys
 import warnings
 
 # Offline, always: a model missing from the cache is an error, not a download.
+# The settings' Download button runs a separate process that may reach the
+# Hub (src/ui/downloads.py); this one never does.
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 warnings.filterwarnings("ignore", category=UserWarning)

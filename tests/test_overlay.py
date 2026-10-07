@@ -493,8 +493,56 @@ def test_automatic_mode_translates_on_release_and_shows_the_result(app, window, 
     view.set_translation("auto", "en")
     select(view, 0, 5)
     QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton)
-    assert asked == [("مرحبا", "en")]
+    assert asked == []                                  # not yet: the mouse may click again
+    assert wait_until(lambda: asked == [("مرحبا", "en")], app)
     assert wait_until(lambda: view.popup.text.toPlainText() == "hello", app)
+    # A click inside the selection, with its translation on show, asks nothing.
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton)
+    wait_until(lambda: False, app, timeout=0.6)
+    assert asked == [("مرحبا", "en")]
+    # Closed and selected again: shown from what was kept, still without asking.
+    view.popup.hide()
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: view.popup.isVisible(), app)
+    assert view.popup.text.toPlainText() == "hello" and len(asked) == 1
+    view.popup.hide()
+
+
+def test_a_double_click_that_becomes_a_triple_click_is_one_translation(app, window, monkeypatch):
+    import src.ui.translate as tr
+    asked = []
+    monkeypatch.setattr(tr, "translate", lambda text, target, **_: asked.append(text) or "x")
+    view = window.view
+    window.show_update(update(["كلمة في سطر"]))
+    view.set_translation("auto", "en")
+    select(view, 0, 4)
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton)
+    select(view)
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: asked, app)
+    wait_until(lambda: False, app, timeout=0.5)
+    assert asked == ["كلمة في سطر"]
+    view.popup.hide()
+
+
+def test_offline_translation_goes_to_nllb_and_says_so(app, window, monkeypatch):
+    import src.ui.translate as tr
+    from src.core import nllb
+    asked = []
+    monkeypatch.setattr(nllb, "translate", lambda text, target: asked.append(target) or "offline!")
+    view = window.view
+    window.show_update(update(["مرحبا"]))
+    view.set_translation("button", "de", "offline")
+    select(view, 0, 5)
+    view.translate_selection()
+    assert wait_until(lambda: view.popup.text.toPlainText() == "offline!", app)
+    assert asked == ["de"] and "Offline" in view.popup.source.text()
+    view.popup.hide()
+    monkeypatch.setattr(tr, "google", lambda *a, **k: "online!")
+    view.set_translation("button", "de", "google")
+    view.translate_selection()
+    assert wait_until(lambda: view.popup.text.toPlainText() == "online!", app)
+    assert view.popup.source.text() == "Google Translate"
     view.popup.hide()
 
 
@@ -516,22 +564,36 @@ def test_a_refusal_from_google_is_said_plainly(app, window, monkeypatch):
 def test_the_right_click_menu_offers_translation_and_remembers_the_choice(app, window):
     view = window.view
     chosen = []
-    view.translation_changed.connect(lambda m, t: chosen.append((m, t)))
-    view.set_translation("button", "en")
+    view.translation_changed.connect(lambda m, t, e: chosen.append((m, t, e)))
+    view.set_translation("button", "en", "google")
     menu = view.build_context_menu()
-    google = next(a.menu() for a in menu.actions() if a.menu() and a.text() == "Google Translate")
-    auto = next(a for a in google.actions() if a.text().startswith("Translate as soon"))
+    options = next(a.menu() for a in menu.actions() if a.menu() and a.text() == "Translation")
+    auto = next(a for a in options.actions() if a.text().startswith("Translate as soon"))
     auto.trigger()
-    assert chosen[-1] == ("auto", "en") and view.translate_mode == "auto"
-    into = next(a.menu() for a in google.actions() if a.menu())
+    assert chosen[-1] == ("auto", "en", "google") and view.translate_mode == "auto"
+    into = next(a.menu() for a in options.actions() if a.menu())
     next(a for a in into.actions() if a.text() == "Türkçe").trigger()
-    assert chosen[-1] == ("auto", "tr")
+    assert chosen[-1] == ("auto", "tr", "google")
+    next(a for a in options.actions() if a.text().startswith("Offline")).trigger()
+    assert chosen[-1] == ("auto", "tr", "offline") and view.translate_with == "offline"
+
+
+def test_offline_is_greyed_out_in_the_menu_until_it_is_downloaded(app, window, monkeypatch):
+    from src.core import models
+    monkeypatch.setattr(models, "is_downloaded", lambda model: model is not models.NLLB)
+    view = window.view
+    view.set_translation("button", "en", "google")
+    options = next(a.menu() for a in view.build_context_menu().actions()
+                   if a.menu() and a.text() == "Translation")
+    offline = next(a for a in options.actions() if a.text().startswith("Offline"))
+    assert not offline.isEnabled() and "Settings" in offline.text()
 
 
 def test_translation_settings_are_saved_and_need_no_restart(store):
-    s = AppSettings(translate="auto", translate_to="tr")
+    s = AppSettings(translate="auto", translate_to="tr", translate_with="offline")
     s.save(store)
-    assert AppSettings.load(store).translate == "auto"
+    loaded = AppSettings.load(store)
+    assert (loaded.translate, loaded.translate_with) == ("auto", "offline")
     assert AppSettings().needs(s) == "window"
 
 

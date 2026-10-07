@@ -1,4 +1,9 @@
-"""Every test runs against a keyring in memory, with no DEEPGRAM_API_KEY: the user's own are never touched."""
+"""Every test runs against a keyring in memory, with no DEEPGRAM_API_KEY: the user's own are never touched.
+
+And every model counts as downloaded, whatever this machine's Hugging Face
+cache holds; a test about a missing one says so itself. The cache the
+downloads read and tidy is an empty folder of the test's own.
+"""
 
 import pytest
 
@@ -13,3 +18,18 @@ def memory_keyring(monkeypatch):
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     yield backend
     keyring.set_keyring(previous)
+
+
+@pytest.fixture(autouse=True)
+def every_model_downloaded(monkeypatch, tmp_path):
+    from src.core import models
+    monkeypatch.setattr(models, "is_downloaded", lambda model: True)
+    monkeypatch.setattr(models, "cache_root", lambda: str(tmp_path / "hf-cache"))
+
+
+@pytest.fixture(autouse=True)
+def google_not_refusing():
+    from src.ui.translate import _google
+    _google.reset()
+    yield
+    _google.reset()

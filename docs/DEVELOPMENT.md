@@ -182,13 +182,16 @@ src/
          settings.py    saved settings and the ⚙ dialog
          theme.py       every colour, radius and stylesheet the app draws with
          icons.py       the line icons, drawn with QPainter
-         translate.py   Google Translate for selected text: request, popup
+         translate.py   translating selected text: Google (two endpoints, cooldown, cache), popup
+         downloads.py   model downloads from the settings: the process, its progress row
          controller.py  model loading, the pipeline thread, applying settings, the menu
          single.py      one instance at a time
          tray.py        the app / tray icon
          x11.py         every workspace, and the click-through input region
   core/  device.py      GPU detection, CUDA libraries from pip
          keystore.py    the Deepgram key in the system keyring
+         models.py      the downloadable models, what is in the cache, the download process
+         nllb.py        offline translation with NLLB-200 on CTranslate2
          arabic.py      comparison keys for Arabic words
          debug.py       the session log
   audio/ capture.py     pw-record on the output monitor

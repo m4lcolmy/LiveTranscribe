@@ -5,12 +5,16 @@ the moment the dialog is saved, and read back at the next start, so the app
 opens the way it was left. A command-line flag overrides a saved value for that
 run only; it is never written back.
 
-The model list is the models actually in the Hugging Face cache: the app never
-downloads anything, so offering a model that is not there would only offer an
-error. Any other CTranslate2 Whisper folder can be picked by hand. The one
-model that is not local is Deepgram, with the user's own API key. That key is
-not a setting: it lives in the system keyring (src/core/keystore.py), and the
-dialog can replace or remove it but never shows it again.
+The model list is the Whisper models the app knows (src/core/models.py) and
+any other in the Hugging Face cache. One that is not on this computer says so
+and its size, and shows a Download button under it, then a progress bar; the
+offline translator the same, under Translation. Nothing downloads unless that
+button is pressed, and Save waits until the chosen model is here — a model
+that is not there would only be an error. Any other CTranslate2 Whisper folder
+can be picked by hand. The one model that is not local is Deepgram, with the
+user's own API key. That key is not a setting: it lives in the system keyring
+(src/core/keystore.py), and the dialog can replace or remove it but never
+shows it again.
 """
 
 import json
@@ -29,10 +33,11 @@ from src.config import (
     ASR_STEP_S_CPU, ASR_STEP_S_GPU, DEEPGRAM_LANGUAGE, DEEPGRAM_MODEL_NAME, DEVICE,
     OVERLAY_FONT_MAX_PX, OVERLAY_FONT_MIN_PX, OVERLAY_FONT_PX, OVERLAY_OPACITY, WHISPER_MODEL,
 )
-from src.core import keystore
+from src.core import keystore, models
 from src.ui import icons
+from src.ui.downloads import DownloadRow
 from src.ui.theme import TEXT, TEXT_2, dialog_palette, dialog_stylesheet
-from src.ui.translate import LANGUAGES, MODES, default_target
+from src.ui.translate import ENGINES, LANGUAGES, MODES, default_target
 
 SETTINGS_ORG = "LiveTranscribe"
 SETTINGS_APP = "LiveTranscribe"
@@ -54,8 +59,9 @@ class AppSettings:
     show_tentative: bool = True       # show words that may still change
     arabic_only: bool = True          # drop speech Whisper hears as another language
     click_through: bool = False
-    translate: str = "button"         # off | button | auto — Google Translate on selection
+    translate: str = "button"         # off | button | auto — translate selected text
     translate_to: str = default_target()
+    translate_with: str = "google"    # google | offline (NLLB-200, src/core/nllb.py)
     deepgram_language: str = DEEPGRAM_LANGUAGE   # ar, or one of Nova-3's Arabic dialects
 
     @classmethod
@@ -115,15 +121,6 @@ def _move_key_to_keyring(store: QSettings):
 
 # ── What there is to choose from ───────────────────────────────────────
 
-MODEL_NOTES = {
-    "small": "fast; the tuned default",
-    "large-v3": "most accurate; several times slower, int8 on a 4 GB GPU",
-    "large-v3-turbo": "near large-v3 accuracy at a fraction of its cost",
-    "medium": "between small and large",
-    "base": "fastest, least accurate",
-}
-
-
 DEEPGRAM_HINT = "Nova-3, in the cloud: speech is sent to Deepgram"
 # Nova-3's Arabic: general, and the dialects it was trained for (2026-10).
 DEEPGRAM_LANGUAGES = [
@@ -135,25 +132,30 @@ DEEPGRAM_LANGUAGES = [
 ]
 
 
-def cached_models() -> list[tuple[str, str]]:
-    """(name, size and note) for every faster-whisper model in the Hugging Face cache."""
+def whisper_models() -> list[tuple[str, str, str]]:
+    """(name, label, hint): the models the app offers, then any other faster-whisper
+    model in the Hugging Face cache. One not downloaded says so in its label."""
+    out, repos = [], set()
+    for m in models.WHISPER:
+        repos.add(m.repo)
+        here = models.is_downloaded(m)
+        label = m.name if here else f"{m.name}  ·  download {m.size}"
+        out.append((m.name, label, f"{m.size} — {m.note}" if m.note else m.size))
     try:
         from faster_whisper.utils import _MODELS
         from huggingface_hub import try_to_load_from_cache
     except ImportError:
-        return [(WHISPER_MODEL, "")]
-    seen, out = set(), []
+        return out
     for name, repo in _MODELS.items():
-        if repo in seen or name.endswith(".en"):
+        if repo in repos or name.endswith(".en"):
             continue
         path = try_to_load_from_cache(repo, "model.bin")
         if not isinstance(path, str):
             continue
-        seen.add(repo)
-        size = os.path.getsize(os.path.realpath(path)) / 1e9
-        note = MODEL_NOTES.get(name, "")
-        out.append((name, f"{size:.1f} GB" + (f" — {note}" if note else "")))
-    return out or [(WHISPER_MODEL, "")]
+        repos.add(repo)
+        size = os.path.getsize(os.path.realpath(path))
+        out.append((name, name, models.size_text(size)))
+    return out
 
 
 def audio_outputs() -> list[tuple[str, str]]:
@@ -257,8 +259,8 @@ class SettingsDialog(QDialog):
         # Speech recognition
         recognition = self._section("Recognition")
         self.model = self._combo([])
-        for name, detail in cached_models():
-            self._add_choice(self.model, name, name, detail)
+        for name, label, detail in whisper_models():
+            self._add_choice(self.model, name, label, detail)
         self._add_choice(self.model, DEEPGRAM_MODEL_NAME, "Deepgram (cloud)", DEEPGRAM_HINT)
         if self.model.findData(current.model) < 0:      # a folder chosen earlier
             self._add_choice(self.model, current.model,
@@ -267,6 +269,9 @@ class SettingsDialog(QDialog):
         self.model.activated.connect(self._maybe_browse)
         self._select(self.model, current.model)
         recognition.add("Model", self.model, self._hint_for(self.model))
+        self.model_download = DownloadRow()
+        self.model_download.ready.connect(self._downloaded)
+        recognition.add("", self.model_download)
 
         self.device = self._combo(DEVICES)
         if not cuda_usable():
@@ -351,16 +356,22 @@ class SettingsDialog(QDialog):
                                       "Needs a tray icon to turn it back off")
         window.add("", self.click_through)
 
-        # Google Translate
+        # Translation: Google, or NLLB on this computer
         translation = self._section("Translation")
         self.translate = self._combo([(value, TRANSLATE_LABELS.get(value, label), "")
                                       for value, label in MODES])
         self._select(self.translate, current.translate)
         translation.add("Translate", self.translate)
+        self.translate_with = self._combo(ENGINES)
+        self._select(self.translate_with, current.translate_with)
+        self._label_engines()
+        translation.add("With", self.translate_with, self._hint_for(self.translate_with))
+        self.translate_download = DownloadRow()
+        self.translate_download.ready.connect(self._downloaded)
+        translation.add("", self.translate_download)
         self.translate_to = self._combo([(code, name, "") for code, name in LANGUAGES])
         self._select(self.translate_to, current.translate_to)
-        translation.add("Into", self.translate_to,
-                        _hint("Only text you select is sent to Google."))
+        translation.add("Into", self.translate_to)
 
         # Advanced: tuning most people never touch, folded away unless in use.
         self.advanced_toggle = QToolButton()
@@ -397,6 +408,7 @@ class SettingsDialog(QDialog):
         save.setProperty("primary", True)
         save.setDefault(True)
         save.clicked.connect(self.accept)
+        self.save_button = save
         footer = QHBoxLayout()
         footer.setSpacing(8)
         footer.addWidget(self.note, 1)
@@ -409,7 +421,8 @@ class SettingsDialog(QDialog):
         # Long output names must not widen the dialog: the drop-downs size to
         # a fixed number of characters and elide the rest.
         for combo in (self.model, self.device, self.precision, self.step, self.sink,
-                      self.translate, self.translate_to, self.deepgram_language):
+                      self.translate, self.translate_with, self.translate_to,
+                      self.deepgram_language):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(28)
             combo.currentIndexChanged.connect(self._changed)
@@ -418,6 +431,10 @@ class SettingsDialog(QDialog):
         self.deepgram_key.textChanged.connect(self._changed)
         self.deepgram_key.textChanged.connect(self._show_key_state)
         self.model.currentIndexChanged.connect(self._show_engine_rows)
+        self.model.currentIndexChanged.connect(self._show_downloads)
+        self.translate.currentIndexChanged.connect(self._show_downloads)
+        self.translate_with.currentIndexChanged.connect(self._show_downloads)
+        self._show_downloads()
         self.font_px.valueChanged.connect(self._appearance)
         self.opacity.valueChanged.connect(self._appearance)
         self.show_tentative.toggled.connect(self._appearance)
@@ -556,6 +573,46 @@ class SettingsDialog(QDialog):
         if self.isVisible():
             QTimer.singleShot(0, lambda: self._refit(middle))
 
+    # ── Downloads ──────────────────────────────────────────────────────
+
+    def _label_engines(self):
+        """Offline says its size while it is not on this computer."""
+        i = self.translate_with.findData("offline")
+        name = dict((v, label) for v, label, _ in ENGINES)["offline"]
+        here = models.is_downloaded(models.NLLB)
+        self.translate_with.setItemText(i, name if here else f"{name}  ·  download {models.NLLB.size}")
+
+    def _show_downloads(self, *_):
+        """A download row under each choice that is not on this computer."""
+        middle = self.frameGeometry().center()
+        self.model_download.show_for(self.model.currentData())
+        on = self.translate.currentData() != "off"
+        self.translate_with.setEnabled(on)
+        self.translate_to.setEnabled(on)
+        self.translate_download.show_for(
+            models.NLLB_NAME if on and self.translate_with.currentData() == "offline" else None)
+        self._changed()
+        if self.isVisible():
+            QTimer.singleShot(0, lambda: self._refit(middle))
+
+    def _downloaded(self, name: str):
+        """A model arrived: its label loses the size, and Save may be pressed."""
+        if name == models.NLLB_NAME:
+            self._label_engines()
+        else:
+            i = self.model.findData(name)
+            if i >= 0:
+                self.model.setItemText(i, name)
+        self._changed()
+
+    def missing(self) -> str | None:
+        """What must be downloaded before Save: the chosen model, or the offline translator."""
+        if self.model_download.missing:
+            return self.model.currentData()
+        if self.translate_download.missing:
+            return "the offline translation model"
+        return None
+
     # ── The key ────────────────────────────────────────────────────────
 
     def key_change(self) -> str | None:
@@ -624,6 +681,8 @@ class SettingsDialog(QDialog):
 
     def accept(self):
         """Save or remove the key first; if the keyring refuses, say so and stay open."""
+        if self.missing() is not None:
+            return                          # Enter pressed while Save is greyed out
         change = self.key_change()
         try:
             if change == "replace":
@@ -640,6 +699,13 @@ class SettingsDialog(QDialog):
     # ── Changes ────────────────────────────────────────────────────────
 
     def _changed(self, *_):
+        if not hasattr(self, "save_button"):
+            return                          # still being built
+        missing = self.missing()
+        self.save_button.setEnabled(missing is None)
+        if missing is not None:
+            self.note.setText(f"Download {missing} to save, or choose another")
+            return
         needs = self._current.needs(self.result_settings())
         if self._cloud and self.key_change() is not None:
             needs = "engine"
@@ -675,5 +741,6 @@ class SettingsDialog(QDialog):
             click_through=self.click_through.isChecked(),
             translate=self.translate.currentData(),
             translate_to=self.translate_to.currentData(),
+            translate_with=self.translate_with.currentData(),
             deepgram_language=self.deepgram_language.currentData(),
         )
