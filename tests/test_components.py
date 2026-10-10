@@ -291,6 +291,26 @@ def test_digits_score_the_same_in_either_script():
     assert score_text("ستعلن القرار عام 2026", "ستعلن القرار عام ٢٠٢٦").cer == 0.0
 
 
+def test_swallowed_counts_grey_words_the_final_text_ends_without_once_each():
+    from src.audio.engine import Word
+    from src.audio.streamer import Line, Update
+    from src.evaluation import SessionRecord
+
+    def shown(tentative, finished=()):
+        words = tuple(Word(t, a, b) for t, a, b in tentative)
+        lines = tuple(Line(" ".join(w.text for w in ws), ws[0].start, ws[-1].end, ws)
+                      for ws in (tuple(Word(t, a, b) for t, a, b in line) for line in finished))
+        return Update(lines, "", "", (), words, None, 0.0)
+
+    record = SessionRecord(duration_s=60.0)
+    record.add(1.0, shown([("قال", 0.0, 0.4), ("الأظي", 0.5, 0.9), ("في", 1.0, 1.2)]))
+    record.add(2.0, shown([("قال", 0.0, 0.4), ("الأظي", 0.5, 0.9), ("في", 1.0, 1.2)]))
+    record.add(3.0, shown([], [[("قال", 0.0, 0.4), ("العظيم", 0.5, 0.9)]]))
+    # الأظي: replaced by العظيم at its time, counted once over two passes; في: gone.
+    assert record.swallowed() == (1, 1)
+    assert record.summary()["swallowed_per_min"] == 2.0
+
+
 # ── Session log ────────────────────────────────────────────────────────
 
 def test_a_new_session_log_counts_only_its_own_session(tmp_path):

@@ -2,7 +2,8 @@
 
 And every model counts as downloaded, whatever this machine's Hugging Face
 cache holds; a test about a missing one says so itself. The cache the
-downloads read and tidy is an empty folder of the test's own.
+downloads read and tidy is an empty folder of the test's own, and so is the
+translation history.
 """
 
 import pytest
@@ -33,3 +34,12 @@ def google_not_refusing():
     _google.reset()
     yield
     _google.reset()
+
+
+@pytest.fixture(autouse=True)
+def history_of_its_own(monkeypatch, tmp_path):
+    """Translations a test makes are kept in its own folder, never in the user's history."""
+    from src.core import history
+    kept = history.History(tmp_path / "translations.jsonl")
+    monkeypatch.setattr(history, "_shared", kept)
+    return kept

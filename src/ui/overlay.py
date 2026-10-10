@@ -43,6 +43,7 @@ from src.config import (
     OVERLAY_BOTTOM_MARGIN, OVERLAY_FONTS, OVERLAY_HEIGHT_PX, OVERLAY_HISTORY_LINES,
     OVERLAY_MAX_WIDTH_PX, OVERLAY_RAISE_EVERY_MS, OVERLAY_WIDTH_FRACTION, TRANSLATE_AUTO_DELAY_MS,
 )
+from src.core import history
 from src.ui import icons
 from src.ui.theme import (
     ACCENT, ACCENT_HOVER, BUSY, ERROR, FIELD_HOVER, HAIRLINE, IDLE, LINE, LIVE, RADIUS,
@@ -67,10 +68,15 @@ class TranscriptView(QTextEdit):
 
     Selected text can be translated — by Google, or offline — through a
     button beside the selection, or at once, as the user chose
-    (translation_changed carries a menu choice back to the settings).
+    (translation_changed carries a menu choice back to the settings). Each
+    translation that comes back is kept in the history (src/core/history.py)
+    while keep_history is on; the menu can turn that off (history_kept) and
+    ask for the history window (history_requested).
     """
 
     translation_changed = pyqtSignal(str, str, str)      # mode, target language, engine
+    history_kept = pyqtSignal(bool)
+    history_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -151,6 +157,11 @@ class TranscriptView(QTextEdit):
         self._auto_later.setInterval(TRANSLATE_AUTO_DELAY_MS)
         self._auto_later.timeout.connect(self._auto_translate)
         self._shown_text = ""          # what the popup is showing a translation of
+        self.keep_history = True
+        # (text, language, engine) of the newest request: the only one whose
+        # answer is delivered, so the one an answer belongs to.
+        self._asked: tuple[str, str, str] | None = None
+        self._saved_key: tuple[str, str, str] | None = None     # its entry in the history
         self.translator.finished.connect(self._translated)
         self.popup: TranslatePopup | None = None
         self.translate_button = QToolButton(self.viewport())
@@ -262,8 +273,11 @@ class TranscriptView(QTextEdit):
     # ── Translation ────────────────────────────────────────────────────
 
     def selected_text(self) -> str:
-        # Qt separates paragraphs in a selection with U+2029.
-        return self.textCursor().selectedText().replace("\u2029", "\n").strip()
+        # Qt separates paragraphs in a selection with U+2029. A transcript line
+        # ends where a segment did, not a sentence: a sentence carried onto the
+        # next line is still one sentence, so the lines are joined with a space.
+        parts = self.textCursor().selectedText().split("\u2029")
+        return " ".join(p.strip() for p in parts if p.strip())
 
     def set_translation(self, mode: str, target: str, engine: str | None = None):
         if engine is not None and engine != self.translate_with:
@@ -316,6 +330,7 @@ class TranscriptView(QTextEdit):
         self.translate_button.hide()
         if self.popup is None:
             self.popup = TranslatePopup()
+            self.popup.star_toggled.connect(self._star)
         note = "Translating…"
         if self.translate_with == "offline":
             from src.core import nllb
@@ -328,6 +343,9 @@ class TranscriptView(QTextEdit):
         x = self.viewport().mapTo(window, self._selection_rect().center()).x()
         self.popup.show_near(window.mapToGlobal(QPoint(x, 0)), window.width())
         self._shown_text = text
+        self._asked = (text, self.translate_to, self.translate_with)
+        self._saved_key = None
+        # Set before asking: an answer already kept comes back inside request().
         self.translator.request(text, self.translate_to, self.translate_with)
 
     def _translated(self, _token: int, text: str, error: str):
@@ -335,8 +353,36 @@ class TranscriptView(QTextEdit):
             return
         if error:
             self.popup.set_error(error)
-        else:
-            self.popup.set_result(text, self.translate_to)
+            return
+        asked, target = self._asked, self.translate_to
+        if asked is not None:
+            target = asked[1]
+        self.popup.set_result(text, target)
+        self.popup.set_star(self._keep(asked, text))
+
+    def set_history(self, on: bool):
+        self.keep_history = on
+
+    def _keep(self, asked, translation: str) -> bool | None:
+        """Into the history: whether it is starred there, or None when it is not kept."""
+        if not self.keep_history or asked is None:
+            return None
+        source, target, engine = asked
+        try:
+            entry = history.shared().add(source, translation, target, engine)
+        except OSError as e:
+            self.add_note(f"Could not save to the translation history: {e.strerror or e}")
+            return None
+        self._saved_key = entry.key if entry is not None else None
+        return entry.starred if entry is not None else None
+
+    def _star(self, on: bool):
+        if self._saved_key is None:
+            return
+        try:
+            history.shared().set_starred(self._saved_key, on)
+        except OSError as e:
+            self.add_note(f"Could not save to the translation history: {e.strerror or e}")
 
     # ── Menu ───────────────────────────────────────────────────────────
 
@@ -392,6 +438,12 @@ class TranscriptView(QTextEdit):
                                                                      self.translate_with))
             targets.addAction(a)
             into.addAction(a)
+        options.addSeparator()
+        keep = QAction("Keep translation history", options, checkable=True)
+        keep.setChecked(self.keep_history)
+        keep.toggled.connect(self._choose_history)
+        options.addAction(keep)
+        menu.addAction("Translation history…", lambda: self.history_requested.emit())
 
         extra = getattr(self.window(), "extra_actions", [])
         if extra:
@@ -403,6 +455,10 @@ class TranscriptView(QTextEdit):
     def _choose(self, mode: str, target: str, engine: str):
         self.set_translation(mode, target, engine)
         self.translation_changed.emit(mode, target, engine)
+
+    def _choose_history(self, on: bool):
+        self.set_history(on)
+        self.history_kept.emit(on)
 
     def contextMenuEvent(self, event):
         self.build_context_menu().exec(event.globalPos())
@@ -645,6 +701,7 @@ class TranscriptWindow(QWidget):
     def apply_settings(self, prefs):
         self.preview(prefs)
         self.view.set_translation(prefs.translate, prefs.translate_to, prefs.translate_with)
+        self.view.set_history(prefs.translate_history)
         if self._click_through != prefs.click_through:
             self.set_click_through(prefs.click_through)
 

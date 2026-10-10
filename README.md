@@ -25,6 +25,8 @@ nothing you listen to is sent anywhere. If you prefer, it can use
 - **Translate.** Select some text and click the translate button that appears
   beside it. The translation opens above the window — from Google Translate,
   or offline, on your own computer.
+- **Translation history.** Everything you translate is kept as a word list
+  you can star, search and export for Anki, Quizlet and other flashcard apps.
 - **Stays out of the way.** Always on top, on every workspace. Move it
   anywhere, make it bigger or smaller — it remembers.
 
@@ -75,7 +77,7 @@ mouse leaves.
 | **✕** | Quit |
 | **Move** | Drag the top bar |
 | **Resize** | Drag the bottom-right corner |
-| **Right-click the text** | Copy · Select all · Copy whole transcript · Clear window · Translate selection · Translation options |
+| **Right-click the text** | Copy · Select all · Copy whole transcript · Clear window · Translate selection · Translation options · Translation history |
 
 A text file of everything said is also kept for each session: right-click the
 tray icon (top bar of the screen) → **Open transcript file**.
@@ -83,7 +85,8 @@ tray icon (top bar of the screen) → **Open transcript file**.
 ## Translation
 
 When you select text, a small translate button appears beside it.
-Click it and the translation opens above the window, with a copy button.
+Click it and the translation opens above the window, with a star and a copy
+button.
 
 Right-click the text → **Translation** to choose how it works:
 
@@ -107,6 +110,40 @@ is sent anywhere and nothing can be refused. Choose it in **⚙ → Translation
 the first time, then well under a second a sentence on a graphics card. Google
 is usually a little more fluent. NLLB-200 is licensed for non-commercial use
 only (CC-BY-NC 4.0).
+
+### Translation history
+
+<img src="docs/images/history.png" alt="The translation history window: Arabic phrases and their English translations, some starred, with Export" width="560">
+
+Every translation is kept in a history on your computer — a word list for
+learning. Open it from the tray menu or right-click the text → **Translation
+history…**
+
+- **☆** in the translation popup, or in the history's first column, stars a
+  translation, like Google Translate's saved words. **Starred only** shows
+  just those.
+- Search finds the Arabic or the translation. **Delete** removes the selected
+  rows; **Clear all…** empties the history.
+- The same text translated again into the same language moves to the top
+  and keeps its star; it is not listed twice.
+- **Export…** saves the rows on show (after search and **Starred only**), in
+  one of three formats, all UTF-8 with no header row:
+
+| Format | Columns | For |
+|---|---|---|
+| **Google Translate saved words** (.csv) | `Arabic, English, السلام عليكم, Peace be upon you` | Anki, and apps that import Google Translate's saved words |
+| **Flashcards: text, translation** (.csv) | `السلام عليكم, Peace be upon you` | Quizlet, Brainscape, Knowt — front and back |
+| **JSON** (.json) | `source_language`, `target_language`, `source_text`, `translated_text`, plus codes, engine, time and star | your own scripts and tools |
+
+In Anki: **File → Import**, choose the file, set **Field separator** to
+Comma, and map the Arabic and translation columns to the card's fields. In
+Quizlet: start a new set, click **Import**, paste what is in the two-column
+file and choose **Comma** between term and definition.
+
+The history is `~/.local/share/LiveTranscribe/translations.jsonl`, one line a
+translation. To stop keeping it: **⚙ → Translation → Keep a history of
+translations**, or right-click the text → **Translation**. What is already
+kept stays until you clear it.
 
 ## Deepgram (cloud)
 
@@ -172,7 +209,8 @@ listening restarted, the dialog says so beside **Save**.
   - **Click-through** — see above.
 - **Translation** — **Translate** (off, a button, or at once), **With**
   (Google Translate, or Offline, which downloads the same way as a model) and
-  **Into** which language; see [Translation](#translation).
+  **Into** which language, and **Keep a history of translations**; see
+  [Translation](#translation).
 - **Advanced** (click to open) — **Precision**, and **Update every**: how
   often the text is refreshed. Whisper only.
 
@@ -215,7 +253,8 @@ loud music are harder. The `large-v3` model is more accurate, but slower.
 
 With a Whisper model, speech recognition runs entirely on your computer and
 audio never leaves it; the only exception is translation with Google, and
-only for text you select. Offline translation sends nothing. Downloading a
+only for text you select. Offline translation sends nothing, and the
+translation history stays on your computer. Downloading a
 model in the settings connects to Hugging Face, only when you click Download.
 
 With **Deepgram**, the speech you play is sent to Deepgram while it is

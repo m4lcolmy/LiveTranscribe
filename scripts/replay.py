@@ -6,6 +6,7 @@
     python scripts/replay.py clip.mp4 --offline           # plus the whole-file ceiling → STREAM GAP
     python scripts/replay.py music.mp3 --silent           # a control clip: must produce nothing
     python scripts/replay.py --manifest tests/clips/manifest.json
+    python scripts/replay.py --manifest tests/clips/manifest.json --speed 1.35   # fast speech
 
 The clock is simulated the way the live loop behaves: a pass starts at t with
 the audio up to t, takes as long as it really takes here (measured), and the
@@ -54,6 +55,19 @@ TRACE = False
 # coverage by 10 points between two runs of the same settings (DW
 # Fckec5jxCZk, 2026-09-26). A/B comparisons need the fixed clock.
 FIXED_CLOCK = False
+# --speed: play the clip faster (ffmpeg atempo, pitch kept). The fast speakers
+# that made words vanish (MBC 8PM, 2026-09-27) are gone from disk; the corpus
+# at 1.35x stands in for them (2026-10-07).
+SPEED = 1.0
+
+
+def speed_up(audio: np.ndarray, factor: float) -> np.ndarray:
+    import subprocess
+    raw = ["-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "1"]
+    out = subprocess.run(["ffmpeg", "-v", "error", *raw, "-i", "-", "-filter:a", f"atempo={factor}",
+                          *raw, "-"], input=audio.astype(np.float32).tobytes(),
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(out, dtype=np.float32).copy()
 
 
 def trace(t: float, update, streamer):
@@ -110,6 +124,8 @@ def evaluate(engine, path: Path, step_s: float | None, ref: Path | None,
         lo = int((start or 0.0) * SAMPLE_RATE)
         hi = int(end * SAMPLE_RATE) if end is not None else len(audio)
         audio = audio[lo:hi]
+    if SPEED != 1.0:
+        audio = speed_up(audio, SPEED)
 
     step = step_s or meta.get("step_s") or (ASR_STEP_S_GPU if engine.device == "cuda" else ASR_STEP_S_CPU)
     record = stream(engine, audio, step)
@@ -160,7 +176,7 @@ def summarize(results: list[dict]):
 
     print("\n══ corpus " + "═" * 70)
     print(f"  {'type·reference':<24}{'clips':>6}{'words':>7}{'COVER':>8}{'CER':>7}{'WER':>7}"
-          f"{'offCER':>8}{'GAP':>7}{'shown p90':>11}{'final p90':>11}{'flick/min':>10}{'vanish/min':>11}")
+          f"{'offCER':>8}{'GAP':>7}{'shown p90':>11}{'final p90':>11}{'flick/min':>10}{'vanish/min':>11}{'swallow/min':>12}")
     for name, rs in groups.items():
         off = (f"{weighted(rs, 'offline_cer', 'ref_chars'):>7.1%}"
                f"{(weighted(rs, 'cer', 'ref_chars') - weighted(rs, 'offline_cer', 'ref_chars')) * 100:>+6.1f}"
@@ -171,7 +187,8 @@ def summarize(results: list[dict]):
               f"{np.nanmean([r['shown_p90'] for r in rs]):>10.2f}s"
               f"{np.nanmean([r['commit_p90'] for r in rs]):>10.2f}s"
               f"{np.mean([r['flicker_per_min'] for r in rs]):>10.1f}"
-              f"{np.mean([r['vanished_per_min'] for r in rs]):>11.1f}")
+              f"{np.mean([r['vanished_per_min'] for r in rs]):>11.1f}"
+              f"{np.mean([r['swallowed_per_min'] for r in rs]):>12.1f}")
     silent = [r for r in results if "stayed_silent" in r]
     if silent:
         ok = sum(r["stayed_silent"] for r in silent)
@@ -200,6 +217,7 @@ def report(r: dict):
     lines.append(f"  LATENCY shown p50 {s(r['shown_p50'])} p90 {s(r['shown_p90'])}   "
                  f"committed p50 {s(r['commit_p50'])} p90 {s(r['commit_p90'])}")
     lines.append(f"  FLICKER {r['flicker_per_min']:.1f}/min (vanished {r['vanished_per_min']:.1f})   "
+                 f"SWALLOWED {r['swallowed_per_min']:.1f}/min (gone {r['swallowed_gone_per_min']:.1f})   "
                  f"REAL-TIME passes {r['passes']}  p50 {ms(r['pass_p50'])} p90 {ms(r['pass_p90'])}"
                  f"  overran step {r['overran']}")
     print("\n".join(lines))
@@ -225,12 +243,14 @@ def main():
                    help="override a faster-whisper guard, e.g. --engine-set no_speech_threshold=none")
     p.add_argument("--fixed-clock", action="store_true",
                    help="schedule passes exactly one step apart: reproducible text for A/B tuning")
+    p.add_argument("--speed", type=float, default=1.0,
+                   help="play the clips this much faster (1.35: a stand-in for fast speakers)")
     p.add_argument("--trace", action="store_true", help="print every pass: buffer, time, commits, drops")
     p.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
                    help="override a Streamer setting, e.g. --set prompt_chars=0 --set end_silence_s=0.5")
     args = p.parse_args()
-    global TRACE, FIXED_CLOCK
-    TRACE, FIXED_CLOCK = args.trace, args.fixed_clock
+    global TRACE, FIXED_CLOCK, SPEED
+    TRACE, FIXED_CLOCK, SPEED = args.trace, args.fixed_clock, args.speed
     for item in args.set:
         name, _, value = item.partition("=")
         OVERRIDES[name] = type(getattr(Streamer(None, vad=object()), name))(value)

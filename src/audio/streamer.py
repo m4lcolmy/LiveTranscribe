@@ -348,20 +348,57 @@ class Streamer:
 
     def _fresh(self, words: list[Word]) -> list[Word]:
         """Drop words that are the already-committed ones heard again."""
-        cutoff = self._last_committed_end - self.commit_tolerance_s
-        new = [w for w in words if w.start > cutoff]
+        end = self._last_committed_end
+        cutoff = end - self.commit_tolerance_s
+        # A word starting before the cutoff is a committed one heard again —
+        # unless most of it lies past the committed end and the word before it
+        # is the last committed one, heard again at its own time: then it is
+        # the next word, its start pulled early by Whisper's wobble on fast
+        # speech. Dropping it lost words that had been shown grey (2026-10-07).
+        # Without that word before it, it is the last one itself heard late,
+        # perhaps spelled anew (تهموا → تهمواء): keeping it doubled the word.
+        new = [w for i, w in enumerate(words)
+               if w.start > cutoff or ((w.start + w.end) / 2 > end and i > 0
+                                       and self._at_last_committed(words[i - 1]))]
+        if new and new[0].start <= cutoff:
+            self.stats["early_words_kept"] += 1
+        before = words[:words.index(new[0])] if new else words
 
-        # A word cut at the trim point can come back at the head of the next
-        # buffer with a time just past the cutoff. If the new head repeats the
-        # committed tail, it is that echo — longest match first.
-        if new and self._in_buffer and abs(new[0].start - self._last_committed_end) < 1.0:
+        # A committed word can come back at the head of the new words: its time
+        # pushed late (a word cut at the trim point does this), or simply past
+        # the cutoff. If the new head repeats the committed tail, it is that
+        # echo — longest match first. Unless this pass already heard those
+        # words again, at their own time, just before it: then the speaker
+        # said them twice ("ايه ايه"), and dropping the second lost it.
+        if new and self._in_buffer and abs(new[0].start - end) < 1.0:
             tail = [compare_key(w.text) for w in self._in_buffer[-self.echo_max_words:]]
-            for n in range(min(len(tail), len(new)), 0, -1):
+            # Only the committed words this pass has not heard again can echo:
+            # in "ايه ايه ايه" a longest match would take the real ones too.
+            unheard = max(1, len(self._in_buffer) - len(before))
+            for n in range(min(len(tail), len(new), unheard), 0, -1):
                 if tail[-n:] == [compare_key(w.text) for w in new[:n]]:
-                    self.stats["echo_words"] += n
-                    new = new[n:]
+                    if self._heard_again(before, n):
+                        self.stats["repeats_kept"] += n
+                    else:
+                        self.stats["echo_words"] += n
+                        new = new[n:]
                     break
         return new
+
+    def _heard_again(self, before: list[Word], n: int) -> bool:
+        """Whether `before` ends with the last n committed words, the last one at its own time."""
+        if len(before) < n or ([compare_key(w.text) for w in before[-n:]]
+                               != [compare_key(w.text) for w in self._in_buffer[-n:]]):
+            return False
+        return self._at_last_committed(before[-1])
+
+    def _at_last_committed(self, word: Word) -> bool:
+        """Whether `word` sits where the last committed word still in the buffer is."""
+        if not self._in_buffer:
+            return False
+        last = self._in_buffer[-1]
+        middle = (word.start + word.end) / 2
+        return last.start - self.commit_tolerance_s <= middle <= last.end + self.commit_tolerance_s
 
     def _commit(self, words: list[Word]) -> list[Line | None]:
         finished: list[Line | None] = []

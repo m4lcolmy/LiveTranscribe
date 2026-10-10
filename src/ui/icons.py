@@ -24,6 +24,7 @@ STROKE = 1.75           # Lucide's default is 2; a little finer at the 16 px the
 class Glyph(NamedTuple):
     name: str
     svg: str            # the elements inside Lucide's <svg>, stroked in currentColor
+    filled: bool = False    # filled in the stroke's colour too: a star that is on
 
 
 LOCK = Glyph("lock", '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/>'
@@ -50,6 +51,13 @@ TRANSLATE = Glyph("languages", '<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><pa
 CHECK = Glyph("check", '<path d="M20 6 9 17l-5-5"/>')
 CHEVRON_DOWN = Glyph("chevron-down", '<path d="m6 9 6 6 6-6"/>')
 CHEVRON_RIGHT = Glyph("chevron-right", '<path d="m9 18 6-6-6-6"/>')
+_STAR = ('<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16'
+         'l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14'
+         'a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1'
+         '-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906'
+         'l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>')
+STAR = Glyph("star", _STAR)
+STAR_ON = Glyph("star-on", _STAR, filled=True)
 EYE = Glyph("eye", '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0'
                    ' 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>')
 EYE_OFF = Glyph("eye-off", '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696'
@@ -61,7 +69,9 @@ EYE_OFF = Glyph("eye-off", '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.
 # ── Rendering ──────────────────────────────────────────────────────────
 
 def pixmap(glyph: Glyph, px: int, color: QColor, stroke: float = STROKE) -> QPixmap:
-    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"'
+    fill = (f'"{color.name()}" fill-opacity="{color.alphaF():.3f}"' if glyph.filled
+            else '"none"')
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={fill}'
            f' stroke="{color.name()}" stroke-opacity="{color.alphaF():.3f}" stroke-width="{stroke}"'
            f' stroke-linecap="round" stroke-linejoin="round">{glyph.svg}</svg>')
     pix = QPixmap(px, px)

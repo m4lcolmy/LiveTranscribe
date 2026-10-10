@@ -98,6 +98,14 @@ def test_text_can_be_selected_and_copied(app, window):
     assert window.view.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
 
 
+def test_a_sentence_carried_onto_the_next_line_is_translated_as_one(window):
+    window.show_update(update(["في الجدار المتجه نحو قبلة الصلاة توجد الخزانة"],
+                              "المقدسة. هذه الخزانة", ""))
+    window.view.selectAll()
+    assert window.view.selected_text() == \
+        "في الجدار المتجه نحو قبلة الصلاة توجد الخزانة المقدسة. هذه الخزانة"
+
+
 def test_notes_sit_above_the_live_line_and_stay_out_of_copies(window):
     window.show_update(update(["قبل التغيير"], "كلمة", ""))
     window.add_note("— model: large-v3 —")

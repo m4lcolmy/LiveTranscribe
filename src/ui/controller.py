@@ -94,6 +94,9 @@ class Controller(QObject):
         self.sink.updated.connect(self.window.show_update)
         self.sink.level.connect(self._show_level)
         self.window.view.translation_changed.connect(self._translation_chosen)
+        self.window.view.history_kept.connect(self._history_chosen)
+        self.window.view.history_requested.connect(self.open_history)
+        self.history_window = None
         self.window.click_through_toggled.connect(self._set_click_through)
         self.window.pause_clicked.connect(self.toggle_pause)
         self.window.settings_clicked.connect(self.open_settings)
@@ -134,6 +137,7 @@ class Controller(QObject):
                        lambda: QGuiApplication.clipboard().setText(self.window.view.full_text()))
         self.transcript_action = menu.addAction("Open transcript file", self._open_transcript)
         self.transcript_action.setEnabled(False)
+        menu.addAction("Translation history…", self.open_history)
         menu.addAction("Reset window position", self.window.reset_position)
         menu.addSeparator()
         self.quit_action = QAction("Quit", menu)
@@ -161,6 +165,22 @@ class Controller(QObject):
         self.prefs.translate, self.prefs.translate_to = mode, target
         self.prefs.translate_with = engine
         self.prefs.save(self.store)
+
+    def _history_chosen(self, on: bool):
+        self.prefs.translate_history = on
+        self.prefs.save(self.store)
+
+    def open_history(self):
+        """One window, raised if it is open; no parent, like the settings."""
+        from src.ui.history import HistoryWindow
+        if self.history_window is None or not self.history_window.isVisible():
+            self.history_window = HistoryWindow()
+            screen = self.window.screen() or QGuiApplication.primaryScreen()
+            self.history_window.move(screen.availableGeometry().center()
+                                     - self.history_window.rect().center())
+        self.history_window.show()
+        self.history_window.raise_()
+        self.history_window.activateWindow()
 
     def _downloaded(self, name: str, error: str):
         """A download started in the settings ended — perhaps after they were closed."""

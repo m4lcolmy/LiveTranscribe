@@ -1,6 +1,6 @@
 """Render the README's pictures from the app's real widgets.
 
-    python packaging/make_screenshots.py      # → docs/images/{banner,window,settings,settings-deepgram}.png
+    python packaging/make_screenshots.py      # → docs/images/{banner,window,settings,settings-deepgram,history}.png
 
 Nothing here is mocked up: the transcript panel, the translate button, the
 Google Translate popup and the settings dialog are the classes the app runs,
@@ -111,6 +111,7 @@ def window_png():
     pop.show_near(QPoint(0, 0), 520)
     pop.set_waiting("English")
     pop.set_result(TRANSLATION, "en")
+    pop.set_star(True)
     QApplication.processEvents()
     draw_widget(p, pop, QPoint(at.x() + 250, at.y() - pop.height() - 12))
     p.end()
@@ -163,6 +164,46 @@ def settings_png(name: str = "settings.png", **chosen):
     img.save(str(OUT / name))
 
 
+# The history as a few minutes of the same report leave it: the Arabic is the
+# corpus's, the English Google Translate's.
+HISTORY = [
+    ("ولد كير ستارمر في الثاني من ديسمبر عام 1962", "Keir Starmer was born on December 2, 1962", True),
+    ("صانع أدوات", "toolmaker", True),
+    ("هيئة الصحة الوطنية", "National Health Service", False),
+    ("الطبقة العاملة", "the working class", True),
+    ("تيمنا بأول زعيم برلماني لحزب العمال", "named after the first parliamentary leader of the Labour Party",
+     False),
+    ("طفولته المبكرة", "his early childhood", False),
+]
+
+
+def history_png():
+    from src.core.history import History
+    from src.ui.history import HistoryWindow
+    path = OUT / ".history.jsonl"
+    path.unlink(missing_ok=True)
+    kept = History(path)
+    for text, translation, starred in HISTORY:
+        kept.add(text, translation, "en", "google")
+        if starred:
+            kept.set_starred((text, "en", "google"), True)
+    w = HistoryWindow(kept)
+    w.resize(760, 360)
+    w.show()
+    w.table.selectRow(1)
+    for _ in range(3):
+        QApplication.processEvents()
+    img = QImage(w.size(), QImage.Format.Format_ARGB32)
+    img.fill(QColor(27, 30, 36))
+    p = QPainter(img)
+    w.render(p)
+    p.end()
+    img.save(str(OUT / "history.png"))
+    w.search.clear()
+    w.close()
+    path.unlink(missing_ok=True)
+
+
 def main():
     app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841
     OUT.mkdir(parents=True, exist_ok=True)
@@ -175,8 +216,9 @@ def main():
     keyring.set_keyring(MemoryKeyring())
     save("0" * 36 + "a1b2")
     settings_png("settings-deepgram.png", model="deepgram")
+    history_png()
     (OUT / ".render.ini").unlink(missing_ok=True)
-    print(f"→ {OUT.relative_to(ROOT)}/ banner.png window.png settings.png settings-deepgram.png")
+    print(f"→ {OUT.relative_to(ROOT)}/ banner.png window.png settings.png settings-deepgram.png history.png")
 
 
 if __name__ == "__main__":

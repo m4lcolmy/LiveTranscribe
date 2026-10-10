@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (
 from src.config import TRANSLATE_CACHE_SIZE, TRANSLATE_COOLDOWN_S, TRANSLATE_TIMEOUT_S
 from src.ui import icons
 from src.ui.theme import (
-    LINE, RADIUS, RAISED, SELECTION, SMALL_PX, TEXT, TEXT_2, TEXT_3,
+    LINE, RADIUS, RAISED, SELECTION, SMALL_PX, STARRED, TEXT, TEXT_2, TEXT_3,
     icon_button_stylesheet, qcolor, rgba,
 )
 
@@ -266,8 +266,12 @@ class TranslatePopup(QFrame):
     """A small panel above the transcript: Translating… → the translation, or why not.
 
     As tall as its text, up to MAX_TEXT_PX, and kept on the side of the
-    transcript it opened on as it grows or shrinks.
+    transcript it opened on as it grows or shrinks. A translation kept in the
+    history (src/core/history.py) has a star beside Copy; `star_toggled` says
+    when the user clicks it.
     """
+
+    star_toggled = pyqtSignal(bool)
 
     MAX_TEXT_PX = 280
     MARGINS = (14, 6, 6, 12)        # left, top, right, bottom — the buttons sit near the edge
@@ -289,6 +293,10 @@ class TranslatePopup(QFrame):
         self.title = QLabel()
         self.source = QLabel("Google Translate")
         self.source.setStyleSheet(f"color: {rgba(TEXT_3)};")
+        self.star_button = self._button(icons.STAR, "Star: mark it in the translation history")
+        self.star_button.setCheckable(True)
+        self.star_button.toggled.connect(self._starred)
+        self.star_button.hide()
         self.copy_button = self._button(icons.COPY, "Copy the translation")
         self.copy_button.clicked.connect(self._copy)
         self.close_button = self._button(icons.CLOSE, "Close")
@@ -298,6 +306,7 @@ class TranslatePopup(QFrame):
         top.addWidget(self.title, 1)
         top.addWidget(self.source)
         top.addSpacing(8)
+        top.addWidget(self.star_button)
         top.addWidget(self.copy_button)
         top.addWidget(self.close_button)
         self.text = QTextBrowser()
@@ -384,6 +393,7 @@ class TranslatePopup(QFrame):
         self.source.setText(ENGINE_SOURCE.get(engine, ENGINE_SOURCE["google"]))
         self._set_text(note, TEXT_3)
         self.copy_button.setEnabled(False)
+        self.star_button.hide()
 
     def set_result(self, text: str, target: str):
         self._set_text(text, rtl=target in RIGHT_TO_LEFT)
@@ -392,6 +402,25 @@ class TranslatePopup(QFrame):
     def set_error(self, message: str):
         self._set_text(message, TEXT_2)
         self.copy_button.setEnabled(False)
+        self.star_button.hide()
+
+    def set_star(self, starred: bool | None):
+        """None: not in the history, so no star. Set quietly — only a click is reported."""
+        self.star_button.setVisible(starred is not None)
+        self.star_button.blockSignals(True)
+        self.star_button.setChecked(bool(starred))
+        self.star_button.blockSignals(False)
+        self._show_star(bool(starred))
+
+    def _show_star(self, on: bool):
+        self.star_button.setIcon(icons.icon(icons.STAR_ON, 16, rest=STARRED, hover=STARRED)
+                                 if on else icons.icon(icons.STAR, 16))
+        self.star_button.setToolTip("Starred in the translation history — click to unstar" if on
+                                    else "Star: mark it in the translation history")
+
+    def _starred(self, on: bool):
+        self._show_star(on)
+        self.star_toggled.emit(on)
 
     def _copy(self):
         QGuiApplication.clipboard().setText(self.text.toPlainText())

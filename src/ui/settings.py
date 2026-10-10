@@ -62,6 +62,7 @@ class AppSettings:
     translate: str = "button"         # off | button | auto — translate selected text
     translate_to: str = default_target()
     translate_with: str = "google"    # google | offline (NLLB-200, src/core/nllb.py)
+    translate_history: bool = True    # keep translations (src/core/history.py)
     deepgram_language: str = DEEPGRAM_LANGUAGE   # ar, or one of Nova-3's Arabic dialects
 
     @classmethod
@@ -372,6 +373,10 @@ class SettingsDialog(QDialog):
         self.translate_to = self._combo([(code, name, "") for code, name in LANGUAGES])
         self._select(self.translate_to, current.translate_to)
         translation.add("Into", self.translate_to)
+        self.translate_history = QCheckBox("Keep a history of translations")
+        self.translate_history.setChecked(current.translate_history)
+        translation.add("", self.translate_history,
+                        _hint("Only on this computer; open it from the tray menu"))
 
         # Advanced: tuning most people never touch, folded away unless in use.
         self.advanced_toggle = QToolButton()
@@ -426,7 +431,7 @@ class SettingsDialog(QDialog):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(28)
             combo.currentIndexChanged.connect(self._changed)
-        for box in (self.arabic_only, self.click_through):
+        for box in (self.arabic_only, self.click_through, self.translate_history):
             box.toggled.connect(self._changed)
         self.deepgram_key.textChanged.connect(self._changed)
         self.deepgram_key.textChanged.connect(self._show_key_state)
@@ -742,5 +747,6 @@ class SettingsDialog(QDialog):
             translate=self.translate.currentData(),
             translate_to=self.translate_to.currentData(),
             translate_with=self.translate_with.currentData(),
+            translate_history=self.translate_history.isChecked(),
             deepgram_language=self.deepgram_language.currentData(),
         )

@@ -3,6 +3,101 @@
 What the benchmarks found, and what each finding changed. Newest first.
 Machine: Ryzen 7 6800H (8 cores), RTX 3050 Ti Mobile 4 GB (driver 595.91).
 
+## 2026-10-07 — grey words swallowed, with Whisper and with Deepgram
+
+Reported live after the fix below: on fast speech a word is shown grey,
+then taken away — very often with Whisper, less often with Deepgram.
+VANISHED had said the problem was solved; it counts only grey words with
+nothing shown after them, so it missed most of what was seen. A new number,
+SWALLOWED (`evaluation.py`): grey words the final text ends up without, once
+each — replaced by another word at their time, or gone.
+
+The al-Sanani clips are no longer on disk. The corpus played 1.35x faster
+(`replay.py --speed 1.35`, ffmpeg atempo) stands in for fast speakers.
+
+### What the grey words that go are (Whisper)
+
+A per-pass trace on four corpus clips (Wz4BCyCl5nk, x-_kr7kwCM4,
+pbLs3rTKmG8, VCp42q61_u8), of every grey word that never became final:
+
+```
+                                              16 min at 1.0x    12 min at 1.35x
+Whisper wrote another word at its time          37.3/min (97%)    49.6/min (97%)
+Whisper wrote nothing there                      0.7               0.8
+the streamer's own filters took it               0.6               0.7
+```
+
+Of the replaced ones, the final word is in the reference where the grey one
+is not 11-16 times as often as the other way round: Whisper correcting
+itself, mostly rightly. Keeping the first guess would cost accuracy. But 45%
+of them (at 1.35x) had been shown while their last 0.3 s was still being spoken, and
+92% were on screen for one pass only: the half-heard last word, which the
+grey line had no need to show.
+
+The streamer's own losses, two filters in `_fresh`:
+
+1. **A word starting before the last committed word's end minus 0.1 s** was
+   taken for that word heard again. On fast speech the next word's start
+   wobbles back further than that, and the word was dropped.
+2. **The echo check** dropped a new word repeating the committed tail —
+   also when the speaker said it twice. Wz4BCyCl5nk's "مقلوبه مقلوبه" came
+   out once; Gulf speech is full of "ايه ايه", "لا لا".
+
+### Deepgram
+
+Deepgram's own example (docs, "endpointing and interim results"): an
+interim covers 0-4.3 s, the final after it only 0-3.26 s, and the words past
+3.26 s come back in the next interim. The streamer cleared every grey word
+when a final came, so those words vanished for about a second — on fast
+speech, at every final. Not measured: a Deepgram replay costs credit and
+sends the audio out. `tests/test_deepgram.py` replays that sequence. The
+session log now has every interim (`DG interim "…"`), so the next report
+can be traced.
+
+Also: words were checked against the last final one's time on every
+message, a filter only re-sent audio after a drop needs. A new word whose
+time overlapped the last final word was dropped. Now only on re-sent audio.
+
+### What changed
+
+- Whisper: a word starting before the cutoff is still new when most of it
+  lies past the committed end *and* the word before it is the last committed
+  one heard again at its own time. A word said twice is kept when this pass
+  heard the first one again at its own time; only committed words this pass
+  has not heard again can be an echo.
+- TENTATIVE_GUARD_S 0 → 0.5: the words ending in the last half second are
+  not shown yet. Agreement is unchanged, so the text is the same.
+- Deepgram: grey words past a final's end stay until the next interim; the
+  already-final filter applies to re-sent audio only.
+
+The first version of the Whisper rule kept any word mostly past the
+committed end. On Wz4BCyCl5nk at 1.35x that kept "تهموا" heard again late
+as "تهمواء" — a doubled word — and from that pass on the run went its own
+way (coverage 90.9 → 87.7%). Hence "the word before it".
+
+Fixed clock, Whisper small, GPU, 12 clips:
+
+```
+                     corpus at 1.0x                              corpus at 1.35x
+                coverage  CER   swallowed gone  shown p50   coverage  CER   swallowed gone  shown p50
+before            94.7%  17.2%    37.6    1.7    1.52 s       93.9%  18.6%    50.8    2.4    1.73 s
+after, guard 0    95.0%  17.0%    37.7    1.5    1.47 s       94.3%  18.3%    49.9    1.5    1.87 s
+  guard 0.3       95.0%  17.0%    16.2    1.2    1.82 s       94.3%  18.3%    27.0    1.4    2.15 s
+  guard 0.5       95.0%  17.0%    14.0    1.2    1.99 s       94.3%  18.3%    23.8    1.3    2.32 s
+```
+
+(per minute; shown p50 also moves ±0.15 s with three runs sharing the GPU.)
+Controls unchanged: music silent, English 48 words (137 at 1.35x, before
+and after). Per clip the text still moves either way with timing alone:
+Fckec5jxCZk CER 22.9 → 18.7%, Wz4BCyCl5nk coverage 89.9 → 89.5%, and
+dp8sFWYnnMQ CER 16.6 → 23.5% — on a 2.3 s closing pass both runs
+hallucinate: before, a loop the gate cut to 5 words; after, the prompt's
+last sentence written out 2.5 times (18 words), which no gate catches.
+
+Still open: Whisper changing its mind about words it has shown (14/min at
+guard 0.5); the prompt written out again on a short closing pass; most of
+the "gone" left is one clip (Fckec5jxCZk, 8-9/min), not traced here.
+
 ## 2026-09-27 — fast speech: words shown, then gone
 
 Reported live: on fast-speaking men the text appears and is cancelled at

@@ -11,6 +11,11 @@ the Streamer: `DeepgramStreamer` has the same feed()/step()/finish() and
 returns the same `Update`s, and the pipeline, the window and the sinks do not
 know which of the two they drive.
 
+**A final can end before the interim words shown so far.** Deepgram
+finalises the audio up to a point it chooses; the interim words past that
+point come back in the next interim. They stay on screen, grey, until then —
+cleared with the final, they vanished on fast speech (2026-10-07).
+
 **What is sent.** Only speech. Silero decides, as it does for the Streamer:
 an utterance is sent from LEAD_IN_S before its first speech frame, and when
 END_SILENCE_S of silence follows it, a Finalize asks Deepgram for its last
@@ -20,7 +25,8 @@ stream's — the transcript's times are the stream's, as with Whisper.
 
 **When the connection drops**, it is opened again and the utterance in
 progress is sent again from its start. Words already final are recognised by
-their stream time and not repeated.
+their stream time and not repeated — on that audio only: otherwise Deepgram
+never sends a word twice, and a word overlapping the last final one is new.
 
 The API key goes in a request header and nowhere else: not in the URL, the
 log, the transcript, the recording or an error message.
@@ -230,6 +236,7 @@ class DeepgramStreamer:
         self._interim: list[Word] = []    # Deepgram's latest guess past them
         self._finished: list[Line] = []   # lines closed since the last update
         self._last_committed_end = 0.0
+        self._resent_until: float | None = None   # stream time: before it, final already, sent again
         self._changed = False
         self.stats: Counter = Counter()
 
@@ -427,7 +434,9 @@ class DeepgramStreamer:
             self._commit(heard)
             self._end_line()
         # Send the utterance again from its start, and ask for its end again.
+        # Its words final already will come back; they are not committed twice.
         self._sent_until = self._utterance_start
+        self._resent_until = self._last_committed_end
         if self._finalizing_since is not None:
             self._finalizing_since, self._finalize_needed = None, True
         self._interim, self._changed = [], True
@@ -476,10 +485,18 @@ class DeepgramStreamer:
 
     def _results(self, message: dict):
         alternatives = (message.get("channel") or {}).get("alternatives") or [{}]
-        cutoff = self._last_committed_end - self.commit_tolerance_s
         words = [w for w in (self._word(raw) for raw in alternatives[0].get("words") or [])
-                 if w is not None and w.start > cutoff]   # final already: sent again after a drop
+                 if w is not None]
+        if self._resent_until is not None:
+            # Sent again after a drop: the words already final come back too.
+            # Only then — Deepgram never sends a final word twice otherwise,
+            # and a word whose time overlaps the last final one is a new word.
+            cutoff = self._resent_until - self.commit_tolerance_s
+            words = [w for w in words if w.start > cutoff]
         if not message.get("is_final"):
+            text = " ".join(w.text for w in words)
+            if text != " ".join(w.text for w in self._interim):
+                log.event("DG", f'interim "{text}"')
             self._interim, self._changed = words, True
             return
         end = self._to_stream(float(message.get("start", 0.0)) + float(message.get("duration", 0.0)))
@@ -489,8 +506,20 @@ class DeepgramStreamer:
         log.event("DG", f"final lag={lag * 1000:.0f}ms{' FINALIZE' if finalize else ''}")
         if words:
             log.detail("commit", '"' + " ".join(w.text for w in words) + '"')
-        self._interim = []
         self._commit(words)
+        # A final covers the audio up to a point Deepgram chose, which can come
+        # before the end of the interim words shown so far: those after it come
+        # back in the next interim. Clearing them made words shown grey vanish
+        # on fast speech until then (2026-10-07); they stay until it comes.
+        # A Finalize's answer covers everything sent: nothing is left to come.
+        floor = self._last_committed_end - self.commit_tolerance_s
+        self._interim = [] if finalize else [w for w in self._interim
+                                             if w.end > end and w.start >= floor]
+        if self._interim:
+            self.stats["interim_kept"] += len(self._interim)
+            log.detail("kept", '"' + " ".join(w.text for w in self._interim) + '"')
+        if self._resent_until is not None and end >= self._resent_until:
+            self._resent_until = None
         self._changed = True
         if finalize:
             self._finalizing_since = None

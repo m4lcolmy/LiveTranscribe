@@ -26,7 +26,11 @@ pw-record (speaker monitor) → AutoGain → Silero VAD → Streamer ⇄ Whisper
   hears the whole utterance and the line ends. Past 8 s the buffer is cut at a
   pause (Whisper stops after the first sentence of a longer buffer). A pass
   that stops short of the last one leaves the grey words after its end on
-  screen instead of erasing them.
+  screen instead of erasing them. Only committed words heard again are
+  dropped from a pass: a word whose start wobbles back over the last committed
+  one is still new, and a word said twice ("ايه ايه") is kept twice. Grey
+  words ending in the last half second are not shown yet: the half-heard last
+  word was most of what was shown grey and then taken away.
 - **Language** — once the buffer holds 6 s, Whisper's language detection is
   asked; two "not Arabic" verdicts in a row drop the speech (shorter audio
   misjudges Arabic too often to act on).
@@ -57,9 +61,13 @@ the same `feed()/step()/finish()`. `session.make_engine()` and
   reopened at the next speech. `DEEPGRAM_SEND_SILENCE` sends everything.
 - **Times**: Deepgram counts only the audio it was sent, so each connection
   keeps a map from its clock back to the stream's.
+- **Finals**: a final covers the audio up to a point Deepgram chooses, which
+  can come before the end of the grey words; those past it stay grey until
+  the next interim brings them back. The session log has every interim
+  (`DG interim "…"`) next to the finals, so a lost word can be traced.
 - **Drops**: reconnect with backoff, send the utterance again from its start,
-  drop words already final by their stream time. 401/402/403 stop with the
-  reason in red; there is nothing to retry.
+  drop words already final by their stream time (on that re-sent audio only).
+  401/402/403 stop with the reason in red; there is nothing to retry.
 - **The key** (`src/core/keystore.py`): in the system keyring through
   `keyring` (Secret Service — GNOME Keyring), never in the settings file; a
   key the first version left there is moved on start. No keyring, no saving:
@@ -111,7 +119,7 @@ DEEPGRAM_API_KEY=… ./run.sh --model deepgram         # Deepgram, this run only
 
 ```bash
 python -m pytest tests/ -q                               # streaming policy, gain, VAD, gates, window, settings
-python scripts/replay.py clip.mp4 --ref clip.txt         # CER/WER/coverage, latency, flicker
+python scripts/replay.py clip.mp4 --ref clip.txt         # CER/WER/coverage, latency, flicker, swallowed
 python scripts/replay.py logs/session-<time>/            # a --record session, again
 python scripts/replay.py clip.mp4 --offline              # vs the whole file transcribed at once
 python scripts/replay.py music.mp3 --silent              # a control clip must produce nothing
@@ -123,7 +131,9 @@ python scripts/bench_latency.py clip.mp4                 # pass time by buffer /
 that behaves like the live loop. `--fixed-clock` schedules passes exactly one
 step apart so the text is reproducible for A/B tuning; `--set name=value`
 changes a Streamer setting and `--engine-set` a faster-whisper guard for one
-run; `--trace` prints every pass.
+run; `--trace` prints every pass; `--speed 1.35` plays the clips faster, a
+stand-in for fast speakers. SWALLOWED counts the grey words the final text
+ends up without — replaced by another word, or gone.
 
 ### The accuracy corpus
 
@@ -175,7 +185,7 @@ packaging/              icons, the .desktop template, make_icons.py, make_screen
 docs/                   this file, images/ for the README
 src/
   config.py             every tunable constant, with the reasoning
-  evaluation.py         CER/WER/coverage, latency, flicker
+  evaluation.py         CER/WER/coverage, latency, flicker, swallowed
   session.py            what both front ends set up the same way; saved settings + flags
   sinks.py              terminal and transcript file
   ui/    overlay.py     the transcript window: fixed-size, scrollable, copyable, translate button
@@ -183,6 +193,7 @@ src/
          theme.py       every colour, radius and stylesheet the app draws with
          icons.py       the line icons, drawn with QPainter
          translate.py   translating selected text: Google (two endpoints, cooldown, cache), popup
+         history.py     the translation history window: star, search, delete, export
          downloads.py   model downloads from the settings: the process, its progress row
          controller.py  model loading, the pipeline thread, applying settings, the menu
          single.py      one instance at a time
@@ -192,6 +203,7 @@ src/
          keystore.py    the Deepgram key in the system keyring
          models.py      the downloadable models, what is in the cache, the download process
          nllb.py        offline translation with NLLB-200 on CTranslate2
+         history.py     kept translations (~/.local/share, JSONL) and their exports
          arabic.py      comparison keys for Arabic words
          debug.py       the session log
   audio/ capture.py     pw-record on the output monitor

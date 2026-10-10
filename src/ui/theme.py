@@ -34,6 +34,7 @@ TENTATIVE = (255, 255, 255, 128)       # words that may still change
 ACCENT = (53, 132, 228)                # GNOME blue: the primary button, selection, focus
 ACCENT_HOVER = (74, 146, 234)
 SELECTION = (53, 132, 228, 120)
+STARRED = (246, 211, 45)               # GNOME yellow: a translation starred in the history
 
 # The status dot.
 LIVE = (46, 194, 126)                  # listening
@@ -191,6 +192,22 @@ def dialog_stylesheet() -> str:
         color: {rgba(TEXT)}; font-size: {UI_PX}px; font-weight: 600;
         border: none; background: transparent; padding: 0;
     }}
+
+    QTableView {{
+        background: transparent; color: {rgba(TEXT)}; font-size: {UI_PX}px;
+        border: 1px solid {rgba(LINE)}; border-radius: {RADIUS_CONTROL}px;
+        gridline-color: transparent; outline: 0;
+        selection-background-color: {rgba(SELECTION)}; selection-color: {rgba(TEXT)};
+    }}
+    QTableView::item {{ padding: 0 8px; border-bottom: 1px solid {rgba(HAIRLINE)}; }}
+    QTableView::item:hover {{ background: {rgba(HOVER)}; }}
+    QTableView::item:selected {{ background: {rgba(SELECTION)}; }}
+    QHeaderView {{ background: transparent; border: none; }}
+    QHeaderView::section {{
+        background: transparent; color: {rgba(TEXT_2)}; font-size: {SMALL_PX}px;
+        border: none; border-bottom: 1px solid {rgba(LINE)}; padding: 5px 8px;
+    }}
+    QTableCornerButton::section {{ background: transparent; border: none; }}
 
     QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: {rgba(LINE)}; border-radius: 2px; min-height: 24px; }}

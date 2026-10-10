@@ -86,9 +86,12 @@ class Connector:
         return self.sockets[-1]
 
 
-def results(words, final, from_finalize=False, start=0.0):
-    """A Deepgram Results message; words are (text, start, end) on the connection's clock."""
-    end = max((b for _, _, b in words), default=start)
+def results(words, final, from_finalize=False, start=0.0, until=None):
+    """A Deepgram Results message; words are (text, start, end) on the connection's clock.
+
+    It covers the audio from `start` to `until` — by default, its last word's end.
+    """
+    end = until if until is not None else max((b for _, _, b in words), default=start)
     return json.dumps({
         "type": "Results", "is_final": final, "speech_final": False, "from_finalize": from_finalize,
         "start": start, "duration": end - start,
@@ -169,6 +172,62 @@ def test_interim_words_are_tentative_final_ones_committed_and_finalize_ends_the_
     lines = [line for u in updates for line in u.finished]
     assert [line.text for line in lines] == ["بسم الله الرحمن"]
     assert lines[0].start == pytest.approx(1.0) and lines[0].end == pytest.approx(2.6)
+
+
+def test_grey_words_past_the_end_of_a_final_stay_until_the_next_interim():
+    # Deepgram's own example (docs: endpointing and interim results): the
+    # interim reached 4.3 s, the final after it stops at 3.26 s, and the
+    # words past that come back in the next interim. Clearing them on the
+    # final made grey words vanish on fast speech (2026-10-07).
+    s, conn, clock = make([(1.0, 9.0)])
+    play(s, clock, 6.0)
+    sock = conn.socket
+    sock.inbox.append(results([("رقم", 0.0, 0.4), ("بطاقتي", 0.5, 1.0), ("اثنان", 1.1, 1.5),
+                               ("اثنان", 1.6, 2.0), ("ثلاثة", 2.1, 2.6)], final=False))
+    assert s.step().tentative == "رقم بطاقتي اثنان اثنان ثلاثة"
+
+    sock.inbox.append(results([("رقم", 0.0, 0.4), ("بطاقتي", 0.5, 1.0), ("اثنان", 1.1, 1.5)],
+                              final=True, until=1.55))
+    update = s.step()
+    assert (update.committed, update.tentative) == ("رقم بطاقتي اثنان", "اثنان ثلاثة")
+
+    sock.inbox.append(results([("اثنان", 1.6, 2.0), ("ثلاثة", 2.1, 2.6), ("ثلاثة", 2.7, 3.0)],
+                              final=False, start=1.55))
+    assert s.step().tentative == "اثنان ثلاثة ثلاثة"
+
+    # A Finalize's answer covers everything sent: nothing grey is left over.
+    sock.inbox.append(results([("اثنان", 1.6, 2.0), ("ثلاثة", 2.1, 2.6)],
+                              final=True, from_finalize=True, start=1.55, until=3.2))
+    update = s.step()
+    assert update.tentative == "" and [line.text for line in update.finished] == [
+        "رقم بطاقتي اثنان اثنان ثلاثة"]
+
+
+def test_a_new_word_overlapping_the_last_final_one_is_not_taken_for_it():
+    # Only words sent again after a drop are final already; any other word
+    # is new, however its time sits against the last final one.
+    s, conn, clock = make([(1.0, 9.0)])
+    play(s, clock, 4.0)
+    sock = conn.socket
+    sock.inbox.append(results([("أ", 0.3, 0.8), ("ب", 0.9, 1.5)], final=True))
+    s.step()
+    sock.inbox.append(results([("ج", 1.35, 1.9)], final=True, start=1.5))
+    assert s.step().committed == "أ ب ج"
+
+
+def test_interim_words_are_in_the_session_log(tmp_path):
+    from src.core.debug import log
+    log.open(tmp_path / "live.log")
+    try:
+        s, conn, clock = make([(1.0, 9.0)])
+        play(s, clock, 2.0)
+        conn.socket.inbox.append(results([("بسم", 0.3, 0.7)], final=False))
+        s.step()
+        conn.socket.inbox.append(results([("بسم", 0.3, 0.7)], final=False))     # unchanged: once
+        s.step()
+    finally:
+        log.close()
+    assert (tmp_path / "live.log").read_text().count('interim "بسم"') == 1
 
 
 def test_a_finalize_never_answered_closes_the_line_with_what_was_heard():

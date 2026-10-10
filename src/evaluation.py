@@ -16,6 +16,9 @@ wrong thing (hifz's lesson):
                 anyone watching.
     VANISHED    the part of FLICKER that left nothing in its place: words that
                 appeared and were gone on the next pass.
+    SWALLOWED   tentative words the final text ends up without — replaced by
+                another word at their time, or gone. What someone watching
+                calls a word swallowed; VANISHED sees only those at the end.
     REAL-TIME   pass latency against the step.
 """
 
@@ -242,12 +245,40 @@ class SessionRecord:
             prev = u
         return count
 
+    def swallowed(self) -> tuple[int, int]:
+        """Words shown grey that never reached the final text: (replaced, gone).
+
+        Each is counted once, however many passes showed it. Replaced: a final
+        word sits at its time, so the model changed its mind (mostly for the
+        better, 2026-10-07). Gone: nothing does — the word itself was lost.
+        """
+        final = [w for _, u in self.shown for line in u.finished for w in line.words]
+        by_key: dict[str, list[Word]] = {}
+        for w in final:
+            by_key.setdefault(compare_key(w.text), []).append(w)
+        seen: dict[str, list[float]] = {}
+        replaced = gone = 0
+        for _, u in self.shown:
+            for w in u.tentative_words:
+                key = compare_key(w.text)
+                if any(abs(start - w.start) < 0.3 for start in seen.get(key, ())):
+                    continue
+                seen.setdefault(key, []).append(w.start)
+                if any(abs(c.start - w.start) < 0.6 for c in by_key.get(key, ())):
+                    continue
+                if any(c.start < w.end and c.end > w.start for c in final):
+                    replaced += 1
+                else:
+                    gone += 1
+        return replaced, gone
+
     def pass_latencies(self) -> list[float]:
         return [u.report.latency_s for _, u in self.shown if u.report is not None]
 
     def summary(self) -> dict:
         first, committed = self.latencies()
         lat = self.pass_latencies()
+        swallowed = self.swallowed()
         minutes = max(self.duration_s / 60, 1e-9)
         return {
             "words": len(self.text.split()),
@@ -255,6 +286,8 @@ class SessionRecord:
             "commit_p50": _pct(committed, 0.5), "commit_p90": _pct(committed, 0.9),
             "flicker_per_min": self.flicker() / minutes,
             "vanished_per_min": self.vanished() / minutes,
+            "swallowed_per_min": sum(swallowed) / minutes,
+            "swallowed_gone_per_min": swallowed[1] / minutes,
             "passes": len(lat),
             "pass_p50": _pct(lat, 0.5), "pass_p90": _pct(lat, 0.9),
             "overran": sum(1 for x in lat if x > self.step_s),

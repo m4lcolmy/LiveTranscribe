@@ -153,7 +153,7 @@ def test_a_word_cut_by_the_buffer_edge_is_never_committed():
 
 def test_the_guard_hides_only_the_words_at_the_very_end_and_agreement_is_unchanged():
     words = script(10)
-    plain = Streamer(ScriptedEngine(words), FakeVad([(0, 4.0)]))
+    plain = Streamer(ScriptedEngine(words), FakeVad([(0, 4.0)]), tentative_guard_s=0.0)
     guarded = Streamer(ScriptedEngine(words), FakeVad([(0, 4.0)]), tentative_guard_s=0.5)
     a, b = run(plain, 3.0), run(guarded, 3.0)
     assert b[-1].committed == a[-1].committed            # what becomes final is the same
@@ -227,7 +227,8 @@ def test_a_pass_that_stops_short_leaves_the_words_after_it_on_screen(keep_s):
     # Measured on fast speech (2026-09-27): grey words shown, then gone on the
     # next pass, then back on the one after — the pass had simply stopped early.
     words = script(10)
-    s = Streamer(StopsShort(words, short_passes={3}, keep_s=keep_s), FakeVad([(0, 6.0)]))
+    s = Streamer(StopsShort(words, short_passes={3}, keep_s=keep_s), FakeVad([(0, 6.0)]),
+                 tentative_guard_s=0.0)          # every grey word shown, the half-heard one too
     updates = run(s, 3.0)
     before = updates[-1].tentative
     assert before == "w5 w6 w7~"
@@ -421,6 +422,61 @@ def test_no_agreement_at_all_is_cut_before_whisper_limit():
     run(s, 60.0)
     assert s.stats["hard_trims"] >= 1
     assert max(end - start for start, end, _ in engine.calls) <= s.hard_max_buffer_s + 1.0 + 1e-6
+
+
+# ── A new word, or a committed one heard again ─────────────────────────
+
+def _after(committed):
+    """A streamer whose last committed words, still in its buffer, are `committed`."""
+    s = Streamer(ScriptedEngine([]), FakeVad([]))
+    s._in_buffer = list(committed)
+    s._last_committed_end = committed[-1].end
+    return s
+
+
+def test_a_word_said_twice_keeps_both():
+    # Fast Gulf speech is full of "ايه ايه" and "لا لا لا". The second one,
+    # right after a commit, was taken for the first heard again (2026-10-07).
+    words = [Word("ايه" if 4 <= i < 12 else f"w{i}", i * 0.4, i * 0.4 + 0.3) for i in range(20)]
+    s = Streamer(ScriptedEngine(words), FakeVad([(0, 8.0)]))
+    updates = run(s, 10.0, chunk_s=0.5)
+    assert committed_words(updates) == [w.text for w in words]
+    assert s.stats["repeats_kept"] >= 1
+
+
+def test_a_new_word_whose_start_wobbles_before_the_committed_end_is_kept():
+    s = _after([Word("أ", 4.6, 5.0), Word("ب", 5.0, 5.4)])
+    heard = [Word("أ", 4.62, 5.02), Word("ب", 5.02, 5.36), Word("ج", 5.22, 5.8), Word("د", 5.8, 6.2)]
+    assert [w.text for w in s._fresh(heard)] == ["ج", "د"]
+
+
+def test_the_last_committed_word_heard_late_and_spelled_anew_is_not_a_new_word():
+    # Corpus, Wz4BCyCl5nk at 1.35x: "تهموا" committed, heard on the next pass
+    # as "تهمواء" with most of it past the committed end. It is no new word:
+    # this pass has nothing at the committed word's own time before it.
+    s = _after([Word("خيما", 4.6, 5.0), Word("تهموا", 5.0, 5.4)])
+    heard = [Word("خيما", 4.6, 5.0), Word("تهمواء", 5.15, 5.75), Word("نعرفكم", 5.8, 6.2)]
+    assert [w.text for w in s._fresh(heard)] == ["نعرفكم"]
+
+
+def test_a_committed_word_heard_late_is_still_an_echo():
+    s = _after([Word("أ", 4.6, 5.0), Word("ب", 5.0, 5.4)])
+    late = [Word("أ", 4.6, 5.0), Word("ب", 5.32, 5.7), Word("ج", 5.7, 6.0)]
+    assert [w.text for w in s._fresh(late)] == ["ج"]
+    # The trim-point echo: the committed word is the buffer's first, heard late.
+    s = _after([Word("ب", 5.0, 5.4)])
+    assert [w.text for w in s._fresh([Word("ب", 5.45, 5.6), Word("ج", 5.7, 6.0)])] == ["ج"]
+
+
+def test_a_repeat_said_twice_is_kept_and_heard_three_times_is_not():
+    s = _after([Word("قال", 4.6, 5.0), Word("ايه", 5.0, 5.4)])
+    twice = [Word("قال", 4.6, 5.0), Word("ايه", 5.0, 5.4), Word("ايه", 5.4, 5.8), Word("ج", 5.8, 6.1)]
+    assert [w.text for w in s._fresh(twice)] == ["ايه", "ج"]
+    # Both said already; this pass hears the first at its time and the second
+    # late. The late one is the second heard again, not a third.
+    s = _after([Word("ايه", 5.0, 5.4), Word("ايه", 5.4, 5.8)])
+    again = [Word("ايه", 5.0, 5.42), Word("ايه", 5.72, 6.1), Word("ج", 6.1, 6.4)]
+    assert [w.text for w in s._fresh(again)] == ["ج"]
 
 
 # ── Lines ──────────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ own clips yet. When one is, the numbers go in its comment and in
 MEASUREMENTS.md — a value without its reason is how tuning turns into guessing.
 """
 
+import os
 from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────────
@@ -14,6 +15,11 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 # The sessions worth investigating are the ones nobody expected, so every run
 # is logged; only the newest few are kept.
 LOG_KEEP = 20
+# Translations the user made, kept until they delete them (src/core/history.py).
+# Not under logs/: those are pruned to the newest LOG_KEEP, and this is the
+# user's word list, not a record for debugging.
+DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "LiveTranscribe"
+HISTORY_FILE = DATA_DIR / "translations.jsonl"
 
 # ── Model ──────────────────────────────────────────────────────────────
 # A faster-whisper size name, resolved from the Hugging Face cache, or a path
@@ -125,7 +131,10 @@ PROMPT_CHARS = 200
 LINE_MAX_CHARS = 90
 # Whisper's word times wobble by about this much between passes over the same
 # audio. A new word starting before the last committed word's end minus this
-# is that word heard again, not a new one.
+# is that word heard again, not a new one — unless most of it lies past that
+# end and the word before it is the committed one heard again: on fast speech
+# the next word's start wobbles early by more, and was dropped
+# (streamer._fresh, 2026-10-07).
 COMMIT_TIME_TOLERANCE_S = 0.1
 # Agreement is a common prefix, so one word Whisper spells differently on every
 # pass holds back every word after it. Measured on a 97 s room-mic recording
@@ -169,11 +178,20 @@ LANGUAGE_CONFIRM_AFTER_S = 2.0
 # Tentative words ending within this many seconds of the newest audio are
 # not shown yet — they still take part in agreement. The last word of a
 # buffer is usually half-heard (الأظي → الأظيم), and showing it grey only to
-# change it is most of the flicker. 0 shows everything. To be decided by the
-# corpus (replay.py --set tentative_guard_s=...).
-TENTATIVE_GUARD_S = 0.0
-# A word cut at the trim point is heard again at the head of the next buffer.
-# Up to this many new leading words are checked against the committed tail.
+# change it is most of the flicker. 0 shows everything. Measured on the
+# corpus (2026-10-07; fixed clock, small, GPU), grey words the final text
+# ends up without — what someone watching calls swallowed — and when a word
+# is first shown:
+#   guard    swallowed/min      shown p50 / p90         at 1.35x speed
+#   0           37.7            1.47 / 2.71 s           49.9   1.87 / 3.51 s
+#   0.3         16.2            1.82 / 2.85 s           27.0   2.15 / 3.67 s
+#   0.5         14.0            1.99 / 2.97 s           23.8   2.32 / 3.80 s
+# The text is the same at every value; words show up half a second later.
+TENTATIVE_GUARD_S = 0.5
+# A committed word can come back as the first new word: cut at the trim point,
+# or its time pushed past the cutoff. Up to this many new leading words are
+# checked against the committed tail — and kept when the same pass heard the
+# tail again at its own time first: then the speaker said it twice.
 ECHO_MAX_WORDS = 5
 
 # ── Whisper decoding ───────────────────────────────────────────────────
